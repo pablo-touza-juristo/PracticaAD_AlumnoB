@@ -23,8 +23,8 @@
     - name: Mostrar info del servidor
       ansible.builtin.debug:
         msg:
-          - "Host: {{ inventory_hostname }}"
-          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+           - "Host: {{ inventory_hostname }}"
+          - "OS: {{ ansible_facts['os_family'] }} {{ ansible_facts['os_version'] }}"
           - "Dominio objetivo: {{ ad_domain_name }}"
 
   roles:
