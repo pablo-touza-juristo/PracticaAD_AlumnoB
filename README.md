@@ -121,6 +121,7 @@ ansible-galaxy collection install community.general --force
 
 ```bash
 wget https://get.jenkins.io/war-stable/latest/jenkins.war -O jenkins.war
+export IP_JENKINS=192.168.1.12
 java -jar jenkins.war
 ```
 
