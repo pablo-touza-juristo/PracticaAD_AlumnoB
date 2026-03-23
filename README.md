@@ -1,4 +1,77 @@
-# ufv-infra — Infraestructura AWS Multi-Cuenta + Ansible
+# Instalación entorno DevOps (Jenkins + Ansible + AWS)
+
+## Requisitos
+
+- Ubuntu (nodo de control)
+- Cuenta AWS con permisos
+- Acceso a instancias Linux y Windows
+- Claves SSH + credenciales Windows
+
+---
+
+## 1. Actualizar sistema
+
+sudo apt update && sudo apt upgrade -y
+
+---
+
+## 2. Instalar dependencias
+
+sudo apt install -y ansible git python3-pip openjdk-17-jdk unzip curl
+
+---
+
+## 3. Instalar AWS CLI
+
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+Configurar perfiles:
+
+aws configure --profile AlexPersonal
+aws configure --profile AlexUFV
+
+---
+
+## 4. Crear entorno virtual
+
+cd /usr/local/ufv
+python3 -m venv ansible_venv
+source ansible_venv/bin/activate
+
+---
+
+## 5. Instalar dependencias Python
+
+pip install -r requirements.txt
+
+---
+
+## 6. Instalar colecciones Ansible
+
+ansible-galaxy collection install amazon.aws --force
+ansible-galaxy collection install community.windows:2.3.0 --force
+ansible-galaxy collection install microsoft.ad --force
+ansible-galaxy collection install ansible.windows --force
+ansible-galaxy collection install community.general --force
+
+---
+
+## 7. Instalar Jenkins
+
+cd /usr/local/ufv
+wget https://get.jenkins.io/war-stable/latest/jenkins.war -O jenkins.war
+java -jar jenkins.war
+
+Acceso:
+http://${IP_JENKINS}:8080
+
+Obtener contraseña inicial:
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+
+
+## 8. configuracion jobs Jenkins ufv-infra — Infraestructura AWS Multi-Cuenta + Ansible
 
 Proyecto unificado para desplegar y gestionar infraestructura AWS en dos cuentas
 (`AlexPersonal` y `AlexUFV`) con VPC Peering cross-account, y automatizar la
