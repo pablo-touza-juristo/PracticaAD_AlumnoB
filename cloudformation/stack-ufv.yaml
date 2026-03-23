@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack AlexUFV - VPC 10.1.0.0/16
+
+Parameters:
+  PeerVpcId:
+    Type: String
+    Default: ""
+  PeerVpcCidr:
+    Type: String
+    Default: "10.0.0.0/16"
+  VpcPeeringConnectionId:
+    Type: String
+    Default: ""
+  MyPublicIp:
+    Type: String
+  KeyPairName:
+    Type: String
+  AmiId:
+    Type: String
+    Default: "ami-073422177b6b3ed22"
+
+Conditions:
+  HasPeeringId: !Not [!Equals [!Ref VpcPeeringConnectionId, ""]]
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.1.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: vpc-ufv
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  SubnetPublic:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.1.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: subnet-ufv-public
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: rt-ufv
+
+  RouteInternet:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  RoutePeering:
+    Type: AWS::EC2::Route
+    Condition: HasPeeringId
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: !Ref PeerVpcCidr
+      VpcPeeringConnectionId: !Ref VpcPeeringConnectionId
+
+  # CRITICO: asociar explicitamente la subnet a NUESTRA route table
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - SubnetPublic
+      - RouteTable
+      - RouteInternet
+    Properties:
+      SubnetId: !Ref SubnetPublic
+      RouteTableId: !Ref RouteTable
+
+  SGUFV:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPC
+    Properties:
+      GroupDescription: SG AlexUFV
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Todo el trafico desde la maquina Jenkins/DevOps
+        - {IpProtocol: -1, CidrIp: !Ref MyPublicIp, Description: "Todo desde Jenkins/DevOps"}
+        # Todo el trafico desde el peering con AlexPersonal
+        - {IpProtocol: -1, CidrIp: 10.0.0.0/16, Description: "Todo desde AlexPersonal via peering"}
+        # HTTP publico
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: "HTTP publico"}
+      SecurityGroupEgress:
+        - {IpProtocol: -1, CidrIp: 0.0.0.0/0}
+      Tags:
+        - Key: Name
+          Value: sg-ufv
+
+  EC2UFV1:
+    Type: AWS::EC2::Instance
+    DependsOn: SubnetRouteTableAssociation
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyPairName
+      ImageId: !Ref AmiId
+      SubnetId: !Ref SubnetPublic
+      PrivateIpAddress: 10.1.1.10
+      SecurityGroupIds:
+        - !Ref SGUFV
+      Tags:
+        - Key: Name
+          Value: ec2-ufv-1
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          exec > /var/log/userdata.log 2>&1
+          set -xe
+          dnf update -y
+          dnf install -y nginx aws-cli htop wget git --allowerasing
+          systemctl enable nginx
+          systemctl start nginx
+          dnf install -y python3.12 python3.12-pip python3.12-devel --allowerasing
+          /usr/bin/python3.12 -m pip install --upgrade pip
+          /usr/bin/python3.12 -m pip install boto3 requests flask gunicorn
+          curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+          dnf install -y nodejs --allowerasing
+          npm install -g pm2
+          cat > /etc/nginx/conf.d/app.conf << 'NGINXEOF'
+          server {
+              listen 80;
+              server_name _;
+              location / {
+                  proxy_pass http://127.0.0.1:3000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection 'upgrade';
+                  proxy_set_header Host $host;
+                  proxy_cache_bypass $http_upgrade;
+              }
+          }
+          NGINXEOF
+          systemctl reload nginx
+          useradd -m -s /bin/bash ansible
+          echo "ansible:Airbusds2026" | chpasswd
+          echo "ansible ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ansible
+          chmod 0440 /etc/sudoers.d/ansible
+          sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          systemctl restart sshd
+          echo "UserData UFV-1 OK"
+
+  EC2UFV2:
+    Type: AWS::EC2::Instance
+    DependsOn: SubnetRouteTableAssociation
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyPairName
+      ImageId: !Ref AmiId
+      SubnetId: !Ref SubnetPublic
+      PrivateIpAddress: 10.1.1.11
+      SecurityGroupIds:
+        - !Ref SGUFV
+      Tags:
+        - Key: Name
+          Value: ec2-ufv-2
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          exec > /var/log/userdata.log 2>&1
+          set -xe
+          dnf update -y
+          dnf install -y nginx aws-cli htop wget git --allowerasing
+          systemctl enable nginx
+          systemctl start nginx
+          dnf install -y python3.12 python3.12-pip python3.12-devel --allowerasing
+          /usr/bin/python3.12 -m pip install --upgrade pip
+          /usr/bin/python3.12 -m pip install boto3 requests flask gunicorn
+          curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+          dnf install -y nodejs --allowerasing
+          npm install -g pm2
+          cat > /etc/nginx/conf.d/app.conf << 'NGINXEOF'
+          server {
+              listen 80;
+              server_name _;
+              location / {
+                  proxy_pass http://127.0.0.1:3000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection 'upgrade';
+                  proxy_set_header Host $host;
+                  proxy_cache_bypass $http_upgrade;
+              }
+          }
+          NGINXEOF
+          systemctl reload nginx
+          useradd -m -s /bin/bash ansible
+          echo "ansible:Airbusds2026" | chpasswd
+          echo "ansible ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ansible
+          chmod 0440 /etc/sudoers.d/ansible
+          sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          systemctl restart sshd
+          echo "UserData UFV-2 OK"
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Export:
+      Name: ufv-vpc-id
+  SubnetId:
+    Value: !Ref SubnetPublic
+    Export:
+      Name: ufv-subnet-id
+  RouteTableId:
+    Value: !Ref RouteTable
+    Export:
+      Name: ufv-rt-id
+  EC2UFV1PrivateIp:
+    Value: 10.1.1.10
+  EC2UFV2PrivateIp:
+    Value: 10.1.1.11

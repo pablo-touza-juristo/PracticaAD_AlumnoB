@@ -1,0 +1,226 @@
+// =============================================================
+// Pipeline: Provisionar infraestructura con Ansible
+// Ejecuta playbooks sobre los servidores AWS
+// =============================================================
+
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'PLAYBOOK',
+            choices: [
+                'setup_ad_dns_ntp',
+                'setup_python_venv',
+                'configure_dns_clients',
+                'deploy_app',
+                'update_inventory',
+                'all'
+            ],
+            description: '''Que playbook ejecutar:
+  setup_ad_dns_ntp     - Convierte DC01 en AD + DNS + NTP
+  setup_python_venv    - Instala venv Python 3.12 en servidores nginx
+  configure_dns_clients - Configura DNS en instancias Linux para usar DC01
+  deploy_app           - Despliega nginx config + web estaticos + Node.js service
+  update_inventory     - Solo actualiza y muestra el inventario
+  all                  - Ejecuta todos en orden'''
+        )
+        string(
+            name: 'LIMIT_HOSTS',
+            defaultValue: '',
+            description: 'Limitar ejecucion a hosts especificos (ej: 10.0.1.11 o nginx). Vacio = todos los del playbook'
+        )
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Modo check: simula cambios sin aplicarlos'
+        )
+        booleanParam(
+            name: 'VERBOSE',
+            defaultValue: false,
+            description: 'Salida verbose (-vv)'
+        )
+        string(
+            name: 'VENV_PATH',
+            defaultValue: '/opt/venv/app',
+            description: 'Ruta del virtualenv (solo para setup_python_venv)'
+        )
+        string(
+            name: 'VENV_PACKAGES',
+            defaultValue: 'boto3,requests,flask,gunicorn,psycopg2-binary,python-dotenv',
+            description: 'Paquetes pip a instalar en el venv (separados por coma)'
+        )
+        string(
+            name: 'AD_DOMAIN',
+            defaultValue: 'corp.ufv.local',
+            description: 'Nombre del dominio AD (solo para setup_ad_dns_ntp)'
+        )
+    }
+
+    environment {
+        ANSIBLE_DIR         = '/usr/local/ufv/ufv-infra/ansible'
+        ANSIBLE_CFG         = '/usr/local/ufv/ufv-infra/ansible/ansible.cfg'
+        INVENTORY           = '/usr/local/ufv/ufv-infra/ansible/inventory/aws_inventory.sh'
+        ANSIBLE_FORCE_COLOR = 'true'
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        ANSIBLE_COLLECTIONS_PATHS  = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/ua4192/.ansible/collections:/usr/share/ansible/collections'
+    }
+
+    stages {
+
+        stage('Verificar entorno') {
+            steps {
+                sh '''
+                    ansible --version
+                    echo "Playbook seleccionado: ${PLAYBOOK}"
+                    echo "Limite hosts: ${LIMIT_HOSTS:-todos}"
+                    echo "Dry run: ${DRY_RUN}"
+                    chmod +x ${INVENTORY}
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} ansible-inventory -i ${INVENTORY} --graph
+                '''
+            }
+        }
+
+        stage('Actualizar inventario') {
+            steps {
+                sh '''
+                    echo "=== Inventario actual ==="
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} ansible-inventory -i ${INVENTORY} --graph
+                '''
+            }
+        }
+
+        stage('Ejecutar: setup_ad_dns_ntp') {
+            when {
+                anyOf {
+                    expression { params.PLAYBOOK == 'setup_ad_dns_ntp' }
+                    expression { params.PLAYBOOK == 'all' }
+                }
+            }
+            steps {
+                script {
+                    def limitArg  = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
+                    def checkArg  = params.DRY_RUN ? '--check' : ''
+                    def verbArg   = params.VERBOSE ? '-vv' : '-v'
+
+                    sh """
+                        ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                        ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/playbooks/setup_ad_dns_ntp.yml \
+                            -e "ad_domain_name=${params.AD_DOMAIN}" \
+                            -e "ad_netbios_name=${params.AD_DOMAIN.split('\\.')[0].toUpperCase()}" \
+                            -e "ad_safe_mode_password=Airbusds2026!" \
+                            ${limitArg} ${checkArg} ${verbArg} \
+                            2>&1
+                    """
+                }
+            }
+        }
+
+        stage('Ejecutar: setup_python_venv') {
+            when {
+                anyOf {
+                    expression { params.PLAYBOOK == 'setup_python_venv' }
+                    expression { params.PLAYBOOK == 'all' }
+                }
+            }
+            steps {
+                script {
+                    def limitArg = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
+                    def checkArg = params.DRY_RUN ? '--check' : ''
+                    def verbArg  = params.VERBOSE ? '-vv' : '-v'
+
+                    sh """
+                        ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                        ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/playbooks/setup_python_venv.yml \
+                            -e "venv_path=${params.VENV_PATH}" \
+                            ${limitArg} ${checkArg} ${verbArg} \
+                            2>&1
+                    """
+                }
+            }
+        }
+
+        stage('Ejecutar: deploy_app') {
+            when {
+                anyOf {
+                    expression { params.PLAYBOOK == 'deploy_app' }
+                    expression { params.PLAYBOOK == 'all' }
+                }
+            }
+            steps {
+                script {
+                    def limitArg = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
+                    def checkArg = params.DRY_RUN ? '--check' : ''
+                    def verbArg  = params.VERBOSE ? '-vv' : '-v'
+
+                    sh """
+                        ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                        ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/playbooks/deploy_app.yml \
+                            ${limitArg} ${checkArg} ${verbArg} \
+                            2>&1
+                    """
+                }
+            }
+        }
+
+        stage('Ejecutar: configure_dns_clients') {
+            when {
+                anyOf {
+                    expression { params.PLAYBOOK == 'configure_dns_clients' }
+                    expression { params.PLAYBOOK == 'all' }
+                }
+            }
+            steps {
+                script {
+                    def limitArg = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
+                    def checkArg = params.DRY_RUN ? '--check' : ''
+                    def verbArg  = params.VERBOSE ? '-vv' : '-v'
+
+                    sh """
+                        ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                        ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/playbooks/configure_dns_clients.yml \
+                            ${limitArg} ${checkArg} ${verbArg} \
+                            2>&1
+                    """
+                }
+            }
+        }
+
+        stage('Ejecutar: update_inventory') {
+            when {
+                expression { params.PLAYBOOK == 'update_inventory' }
+            }
+            steps {
+                sh """
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                    ansible-playbook \
+                        -i ${INVENTORY} \
+                        ${ANSIBLE_DIR}/playbooks/update_inventory.yml \
+                        -v \
+                        2>&1
+                """
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "✅ Pipeline Ansible completado con éxito"
+        }
+        failure {
+            echo "❌ Pipeline Ansible fallido. Revisa los logs."
+            echo "Puedes ejecutar manualmente con:"
+            echo "  cd /usr/local/ufv/ufv-infra/ansible"
+            echo "  ansible-playbook -i inventory/aws_inventory.sh playbooks/<nombre>.yml -v"
+        }
+    }
+}

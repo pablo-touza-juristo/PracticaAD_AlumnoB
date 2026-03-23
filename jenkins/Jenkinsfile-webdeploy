@@ -1,0 +1,78 @@
+// =============================================================
+// Pipeline: AWS-UFV-Ansible-Web-Deploy
+// Actualiza contenido web estatico y reinicia servicios
+// AlexPersonal: web + nginx restart
+// AlexUFV:      web + nginx restart + node app update + restart
+// =============================================================
+
+pipeline {
+    agent any
+
+    parameters {
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Modo check: simula cambios sin aplicarlos'
+        )
+        booleanParam(
+            name: 'VERBOSE',
+            defaultValue: false,
+            description: 'Salida verbose (-vv)'
+        )
+        string(
+            name: 'LIMIT_HOSTS',
+            defaultValue: '',
+            description: 'Limitar a hosts especificos (ej: 10.1.1.10). Vacio = todos'
+        )
+    }
+
+    environment {
+        ANSIBLE_DIR               = '/usr/local/ufv/ufv-infra/ansible'
+        ANSIBLE_CFG               = '/usr/local/ufv/ufv-infra/ansible/ansible.cfg'
+        INVENTORY                 = '/usr/local/ufv/ufv-infra/ansible/inventory/aws_inventory.sh'
+        ANSIBLE_FORCE_COLOR       = 'true'
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        ANSIBLE_COLLECTIONS_PATHS = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/ua4192/.ansible/collections:/usr/share/ansible/collections'
+    }
+
+    stages {
+
+        stage('Verificar inventario') {
+            steps {
+                sh '''
+                    chmod +x ${INVENTORY}
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} ansible-inventory -i ${INVENTORY} --graph
+                '''
+            }
+        }
+
+        stage('Actualizar web AlexPersonal + AlexUFV') {
+            steps {
+                script {
+                    def limitArg = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
+                    def checkArg = params.DRY_RUN ? '--check' : ''
+                    def verbArg  = params.VERBOSE ? '-vv' : '-v'
+
+                    sh """
+                        ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                        ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/playbooks/update_web.yml \
+                            ${limitArg} ${checkArg} ${verbArg} \
+                            2>&1
+                    """
+                }
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "✅ Web actualizada correctamente en todos los servidores"
+        }
+        failure {
+            echo "❌ Error al actualizar la web. Revisa los logs."
+        }
+    }
+}

@@ -1,0 +1,490 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'MY_PUBLIC_IP',       defaultValue: '',                      description: 'Tu IP publica para SSH (vacio = autodetectar)')
+        string(name: 'KEY_PAIR_PERSONAL',  defaultValue: 'aws',                   description: 'Key Pair en AlexPersonal')
+        string(name: 'KEY_PAIR_UFV',       defaultValue: 'aws_ufv',               description: 'Key Pair en AlexUFV')
+        string(name: 'AMI_LINUX',           defaultValue: 'ami-073422177b6b3ed22', description: 'AMI Amazon Linux 2023 eu-south-2')
+        string(name: 'AMI_WINDOWS',        defaultValue: 'ami-0349104b138bf332c', description: 'AMI Windows Server 2019 eu-south-2')
+        string(name: 'AWS_REGION',         defaultValue: 'eu-south-2',            description: 'Region AWS')
+        choice(name: 'ACTION',             choices: ['deploy', 'destroy'],         description: 'Accion')
+        booleanParam(name: 'SKIP_UFV_PREREQ', defaultValue: false,                description: 'Saltar creacion rol IAM en UFV si ya existe')
+    }
+
+    environment {
+        AWS_PROFILE_PERSONAL = 'AlexPersonal'
+        AWS_PROFILE_UFV      = 'AlexUFV'
+        STACK_UFV_PREREQ     = 'stack-ufv-prereq'
+        STACK_PERSONAL       = 'stack-personal'
+        STACK_UFV            = 'stack-ufv'
+        CFN_PERSONAL = '/usr/local/ufv/ufv-infra/cloudformation/stack-personal.yaml'
+        CFN_UFV      = '/usr/local/ufv/ufv-infra/cloudformation/stack-ufv.yaml'
+    }
+
+    stages {
+
+        // ─────────────────────────────────────────────
+        stage('Init') {
+            steps {
+                script {
+                    echo "Accion: ${params.ACTION} | Region: ${params.AWS_REGION}"
+
+                    env.DETECTED_IP = params.MY_PUBLIC_IP != '' ? params.MY_PUBLIC_IP :
+                        sh(script: "curl -s https://checkip.amazonaws.com", returnStdout: true).trim() + "/32"
+
+                    env.ACCOUNT_ID_PERSONAL = sh(
+                        script: "aws sts get-caller-identity --profile ${AWS_PROFILE_PERSONAL} --query Account --output text",
+                        returnStdout: true).trim()
+                    env.ACCOUNT_ID_UFV = sh(
+                        script: "aws sts get-caller-identity --profile ${AWS_PROFILE_UFV} --query Account --output text",
+                        returnStdout: true).trim()
+
+                    echo "AlexPersonal: ${env.ACCOUNT_ID_PERSONAL} | AlexUFV: ${env.ACCOUNT_ID_UFV} | IP: ${env.DETECTED_IP}"
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('Validate Templates') {
+            when { expression { params.ACTION == 'deploy' } }
+            parallel {
+                stage('Validate Personal') {
+                    steps {
+                        sh "aws cloudformation validate-template --template-body file://${CFN_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL}"
+                        echo "✅ Personal OK"
+                    }
+                }
+                stage('Validate UFV') {
+                    steps {
+                        sh "aws cloudformation validate-template --template-body file://${CFN_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV}"
+                        echo "✅ UFV OK"
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('UFV: Prereq Role') {
+            when {
+                allOf {
+                    expression { params.ACTION == 'deploy' }
+                    expression { !params.SKIP_UFV_PREREQ }
+                }
+            }
+            steps {
+                script {
+                    def prereqTemplate = """
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Rol IAM para aceptar VPC Peering desde AlexPersonal
+Parameters:
+  PersonalAccountId:
+    Type: String
+Resources:
+  PeeringAcceptorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: vpc-peering-acceptor-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::\${PersonalAccountId}:root"
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AcceptVpcPeering
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:AcceptVpcPeeringConnection
+                  - ec2:DescribeVpcPeeringConnections
+                Resource: "*"
+Outputs:
+  PeeringRoleArn:
+    Value: !GetAtt PeeringAcceptorRole.Arn
+    Export:
+      Name: ufv-peering-role-arn
+"""
+                    writeFile file: '/tmp/stack-ufv-prereq.yaml', text: prereqTemplate
+
+                    def status = sh(
+                        script: "aws cloudformation describe-stacks --stack-name ${STACK_UFV_PREREQ} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo DOES_NOT_EXIST",
+                        returnStdout: true).trim()
+
+                    if (status == 'DOES_NOT_EXIST') {
+                        sh """
+                            aws cloudformation create-stack \
+                                --stack-name ${STACK_UFV_PREREQ} \
+                                --template-body file:///tmp/stack-ufv-prereq.yaml \
+                                --parameters ParameterKey=PersonalAccountId,ParameterValue=${env.ACCOUNT_ID_PERSONAL} \
+                                --capabilities CAPABILITY_NAMED_IAM \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV}
+                        """
+                        sh "aws cloudformation wait stack-create-complete --stack-name ${STACK_UFV_PREREQ} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV}"
+                    } else {
+                        echo "Prereq ya existe (${status})"
+                    }
+
+                    env.PEERING_ROLE_ARN = sh(
+                        script: """aws cloudformation describe-stacks --stack-name ${STACK_UFV_PREREQ} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} --query "Stacks[0].Outputs[?OutputKey=='PeeringRoleArn'].OutputValue" --output text""",
+                        returnStdout: true).trim()
+                    echo "✅ Role ARN: ${env.PEERING_ROLE_ARN}"
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('UFV: Deploy VPC (sin peering aun)') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                script {
+                    // Desplegamos UFV primero SIN peering para obtener su VPC ID
+                    def status = sh(
+                        script: "aws cloudformation describe-stacks --stack-name ${STACK_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo DOES_NOT_EXIST",
+                        returnStdout: true).trim()
+
+                    def paramsUfv = """[
+                        {"ParameterKey":"PeerVpcId",             "ParameterValue":""},
+                        {"ParameterKey":"PeerVpcCidr",           "ParameterValue":"10.0.0.0/16"},
+                        {"ParameterKey":"VpcPeeringConnectionId","ParameterValue":""},
+                        {"ParameterKey":"MyPublicIp",            "ParameterValue":"${env.DETECTED_IP}"},
+                        {"ParameterKey":"KeyPairName",           "ParameterValue":"${params.KEY_PAIR_UFV}"}
+                    ]"""
+                    writeFile file: '/tmp/params-ufv.json', text: paramsUfv
+
+                    if (status == 'DOES_NOT_EXIST') {
+                        sh """
+                            aws cloudformation create-stack \
+                                --stack-name ${STACK_UFV} \
+                                --template-body file://${CFN_UFV} \
+                                --parameters file:///tmp/params-ufv.json \
+                                --capabilities CAPABILITY_IAM \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV}
+                        """
+                        sh "aws cloudformation wait stack-create-complete --stack-name ${STACK_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV}"
+                    } else if (status in ['CREATE_COMPLETE','UPDATE_COMPLETE','UPDATE_ROLLBACK_COMPLETE']) {
+                        echo "Stack UFV ya existe (${status}), continuando"
+                    } else {
+                        error("Stack UFV en estado inesperado: ${status}")
+                    }
+
+                    env.UFV_VPC_ID = sh(
+                        script: """aws cloudformation describe-stacks --stack-name ${STACK_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} --query "Stacks[0].Outputs[?OutputKey=='VpcId'].OutputValue" --output text""",
+                        returnStdout: true).trim()
+                    env.UFV_RT_ID = sh(
+                        script: """aws cloudformation describe-stacks --stack-name ${STACK_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} --query "Stacks[0].Outputs[?OutputKey=='RouteTableId'].OutputValue" --output text""",
+                        returnStdout: true).trim()
+
+                    echo "✅ UFV VPC ID: ${env.UFV_VPC_ID} | RT: ${env.UFV_RT_ID}"
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('Personal: Deploy con peering') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                script {
+                    if (!env.PEERING_ROLE_ARN) {
+                        env.PEERING_ROLE_ARN = sh(
+                            script: """aws cloudformation describe-stacks --stack-name ${STACK_UFV_PREREQ} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} --query "Stacks[0].Outputs[?OutputKey=='PeeringRoleArn'].OutputValue" --output text 2>/dev/null || echo """,
+                            returnStdout: true).trim()
+                    }
+
+                    def paramsPersonal = """[
+                        {"ParameterKey":"PeerVpcId",      "ParameterValue":"${env.UFV_VPC_ID}"},
+                        {"ParameterKey":"PeerAccountId",  "ParameterValue":"${env.ACCOUNT_ID_UFV}"},
+                        {"ParameterKey":"PeerRoleArn",    "ParameterValue":"${env.PEERING_ROLE_ARN}"},
+                        {"ParameterKey":"PeerVpcCidr",    "ParameterValue":"10.1.0.0/16"},
+                        {"ParameterKey":"MyPublicIp",     "ParameterValue":"${env.DETECTED_IP}"},
+                        {"ParameterKey":"KeyPairName",    "ParameterValue":"${params.KEY_PAIR_PERSONAL}"},
+                        {"ParameterKey":"AmiId",          "ParameterValue":"${params.AMI_LINUX}"},
+                        {"ParameterKey":"AmiIdWindows",   "ParameterValue":"${params.AMI_WINDOWS}"}
+                    ]"""
+                    writeFile file: '/tmp/params-personal.json', text: paramsPersonal
+
+                    def status = sh(
+                        script: "aws cloudformation describe-stacks --stack-name ${STACK_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo DOES_NOT_EXIST",
+                        returnStdout: true).trim()
+
+                    if (status == 'DOES_NOT_EXIST') {
+                        sh """
+                            aws cloudformation create-stack \
+                                --stack-name ${STACK_PERSONAL} \
+                                --template-body file://${CFN_PERSONAL} \
+                                --parameters file:///tmp/params-personal.json \
+                                --capabilities CAPABILITY_IAM \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL}
+                        """
+                        sh "aws cloudformation wait stack-create-complete --stack-name ${STACK_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL}"
+                    } else {
+                        sh """
+                            aws cloudformation update-stack \
+                                --stack-name ${STACK_PERSONAL} \
+                                --template-body file://${CFN_PERSONAL} \
+                                --parameters file:///tmp/params-personal.json \
+                                --capabilities CAPABILITY_IAM \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} || true
+                        """
+                        sh "aws cloudformation wait stack-update-complete --stack-name ${STACK_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} || true"
+                    }
+
+                    env.PEERING_ID = sh(
+                        script: """aws cloudformation describe-stacks --stack-name ${STACK_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} --query "Stacks[0].Outputs[?OutputKey=='VpcPeeringConnectionId'].OutputValue" --output text 2>/dev/null || echo """,
+                        returnStdout: true).trim()
+                    env.PERSONAL_RT_ID = sh(
+                        script: """aws cloudformation describe-stacks --stack-name ${STACK_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} --query "Stacks[0].Outputs[?OutputKey=='RouteTableId'].OutputValue" --output text""",
+                        returnStdout: true).trim()
+
+                    echo "✅ Peering ID: ${env.PEERING_ID} | Personal RT: ${env.PERSONAL_RT_ID}"
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('Accept VPC Peering') {
+            when {
+                allOf {
+                    expression { params.ACTION == 'deploy' }
+                    expression { env.PEERING_ID != null && env.PEERING_ID != '' }
+                }
+            }
+            steps {
+                script {
+                    echo "Esperando estado pending-acceptance..."
+                    sh """
+                        for i in \$(seq 1 18); do
+                            STATUS=\$(aws ec2 describe-vpc-peering-connections \
+                                --vpc-peering-connection-ids ${env.PEERING_ID} \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} \
+                                --query 'VpcPeeringConnections[0].Status.Code' --output text 2>/dev/null || echo "not-found")
+                            echo "Intento \$i/18 - Estado: \$STATUS"
+                            if [ "\$STATUS" = "pending-acceptance" ] || [ "\$STATUS" = "active" ]; then
+                                break
+                            fi
+                            sleep 10
+                        done
+                    """
+
+                    sh """
+                        STATUS=\$(aws ec2 describe-vpc-peering-connections \
+                            --vpc-peering-connection-ids ${env.PEERING_ID} \
+                            --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} \
+                            --query 'VpcPeeringConnections[0].Status.Code' --output text)
+                        if [ "\$STATUS" = "pending-acceptance" ]; then
+                            aws ec2 accept-vpc-peering-connection \
+                                --vpc-peering-connection-id ${env.PEERING_ID} \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV}
+                            echo "✅ Peering aceptado"
+                        elif [ "\$STATUS" = "active" ]; then
+                            echo "✅ Peering ya activo"
+                        else
+                            echo "ERROR: estado inesperado \$STATUS"
+                            exit 1
+                        fi
+                    """
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('UFV: Update con ruta de retorno') {
+            when {
+                allOf {
+                    expression { params.ACTION == 'deploy' }
+                    expression { env.PEERING_ID != null && env.PEERING_ID != '' }
+                }
+            }
+            steps {
+                script {
+                    echo "Actualizando stack UFV con ruta de retorno hacia Personal..."
+
+                    def paramsUfvFinal = """[
+                        {"ParameterKey":"PeerVpcId",             "ParameterValue":"${env.UFV_VPC_ID}"},
+                        {"ParameterKey":"PeerVpcCidr",           "ParameterValue":"10.0.0.0/16"},
+                        {"ParameterKey":"VpcPeeringConnectionId","ParameterValue":"${env.PEERING_ID}"},
+                        {"ParameterKey":"MyPublicIp",            "ParameterValue":"${env.DETECTED_IP}"},
+                        {"ParameterKey":"KeyPairName",           "ParameterValue":"${params.KEY_PAIR_UFV}"}
+                    ]"""
+                    writeFile file: '/tmp/params-ufv-final.json', text: paramsUfvFinal
+
+                    sh """
+                        aws cloudformation update-stack \
+                            --stack-name ${STACK_UFV} \
+                            --template-body file://${CFN_UFV} \
+                            --parameters file:///tmp/params-ufv-final.json \
+                            --capabilities CAPABILITY_IAM \
+                            --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} || true
+                    """
+                    sh "aws cloudformation wait stack-update-complete --stack-name ${STACK_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} || true"
+
+                    echo "✅ Stack UFV actualizado con ruta de retorno"
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('Verify & Add missing routes') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                script {
+                    echo "Verificando y añadiendo rutas si faltan..."
+
+                    // Ruta Personal → UFV
+                    sh """
+                        RT=\$(aws cloudformation describe-stacks --stack-name ${STACK_PERSONAL} \
+                            --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} \
+                            --query "Stacks[0].Outputs[?OutputKey=='RouteTableId'].OutputValue" \
+                            --output text 2>/dev/null || echo "")
+                        if [ -n "\$RT" ] && [ -n "${env.PEERING_ID}" ]; then
+                            aws ec2 create-route \
+                                --route-table-id \$RT \
+                                --destination-cidr-block 10.1.0.0/16 \
+                                --vpc-peering-connection-id ${env.PEERING_ID} \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} 2>/dev/null \
+                                && echo "✅ Ruta Personal->UFV creada" \
+                                || echo "ℹ️  Ruta Personal->UFV ya existia"
+                        fi
+                    """
+
+                    // Ruta UFV → Personal
+                    sh """
+                        RT=\$(aws cloudformation describe-stacks --stack-name ${STACK_UFV} \
+                            --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} \
+                            --query "Stacks[0].Outputs[?OutputKey=='RouteTableId'].OutputValue" \
+                            --output text 2>/dev/null || echo "")
+                        if [ -n "\$RT" ] && [ -n "${env.PEERING_ID}" ]; then
+                            aws ec2 create-route \
+                                --route-table-id \$RT \
+                                --destination-cidr-block 10.0.0.0/16 \
+                                --vpc-peering-connection-id ${env.PEERING_ID} \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} 2>/dev/null \
+                                && echo "✅ Ruta UFV->Personal creada" \
+                                || echo "ℹ️  Ruta UFV->Personal ya existia"
+                        fi
+                    """
+
+                    // Verificar peering activo
+                    def peeringStatus = sh(
+                        script: """aws ec2 describe-vpc-peering-connections \
+                            --vpc-peering-connection-ids ${env.PEERING_ID} \
+                            --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} \
+                            --query 'VpcPeeringConnections[0].Status.Code' --output text 2>/dev/null || echo unknown""",
+                        returnStdout: true).trim()
+
+                    if (peeringStatus != 'active') {
+                        error("❌ Peering no activo: ${peeringStatus}")
+                    }
+                    echo "✅ Peering activo y rutas verificadas"
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('Summary') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                script {
+                    def personalOut = sh(script: "aws cloudformation describe-stacks --stack-name ${STACK_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} --query 'Stacks[0].Outputs' --output table", returnStdout: true).trim()
+                    def ufvOut = sh(script: "aws cloudformation describe-stacks --stack-name ${STACK_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} --query 'Stacks[0].Outputs' --output table", returnStdout: true).trim()
+
+                                        // IPs publicas de todas las instancias
+                    def ipsPersonal = sh(script: '''
+                        VPC_ID=$(aws ec2 describe-vpcs --profile AlexPersonal --region ''' + params.AWS_REGION + ''' \
+                            --filters "Name=cidr,Values=10.0.0.0/16" "Name=isDefault,Values=false" \
+                            --query 'Vpcs[0].VpcId' --output text)
+                        aws ec2 describe-instances \
+                            --profile AlexPersonal --region ''' + params.AWS_REGION + ''' \
+                            --filters "Name=vpc-id,Values=$VPC_ID" "Name=instance-state-name,Values=running" \
+                            --query 'Reservations[*].Instances[*].[Tags[?Key==`Name`].Value|[0],PrivateIpAddress,PublicIpAddress]' \
+                            --output table
+                    ''', returnStdout: true).trim()
+
+                    def ipsUFV = sh(script: '''
+                        VPC_ID=$(aws ec2 describe-vpcs --profile AlexUFV --region ''' + params.AWS_REGION + ''' \
+                            --filters "Name=cidr,Values=10.1.0.0/16" "Name=isDefault,Values=false" \
+                            --query 'Vpcs[0].VpcId' --output text)
+                        aws ec2 describe-instances \
+                            --profile AlexUFV --region ''' + params.AWS_REGION + ''' \
+                            --filters "Name=vpc-id,Values=$VPC_ID" "Name=instance-state-name,Values=running" \
+                            --query 'Reservations[*].Instances[*].[Tags[?Key==`Name`].Value|[0],PrivateIpAddress,PublicIpAddress]' \
+                            --output table
+                    ''', returnStdout: true).trim().trim()
+
+                    echo """
+===========================================================
+ DESPLIEGUE COMPLETADO
+===========================================================
+ Peering ID    : ${env.PEERING_ID}
+ CIDR Personal : 10.0.0.0/16
+ CIDR UFV      : 10.1.0.0/16
+
+ IPs AlexPersonal (Nombre | IP Privada | IP Publica):
+${ipsPersonal}
+
+ IPs AlexUFV (Nombre | IP Privada | IP Publica):
+${ipsUFV}
+
+ Outputs AlexPersonal:
+${personalOut}
+
+ Outputs AlexUFV:
+${ufvOut}
+==========================================================="""
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        stage('DESTROY') {
+            when { expression { params.ACTION == 'destroy' } }
+            steps {
+                script {
+                    echo "⚠️  Destruyendo infraestructura..."
+
+                    // 1. Eliminar todos los peerings activos
+                    sh """
+                        PEERING_IDS=\$(aws ec2 describe-vpc-peering-connections \
+                            --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} \
+                            --filters "Name=status-code,Values=active,pending-acceptance,provisioning" \
+                            --query 'VpcPeeringConnections[*].VpcPeeringConnectionId' \
+                            --output text 2>/dev/null || echo "")
+                        for PCX in \$PEERING_IDS; do
+                            echo "Eliminando peering \$PCX..."
+                            aws ec2 delete-vpc-peering-connection \
+                                --vpc-peering-connection-id \$PCX \
+                                --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} || true
+                        done
+                        sleep 15
+                        echo "✅ Peerings eliminados"
+                    """
+
+                    // 2. Stack UFV
+                    sh "aws cloudformation delete-stack --stack-name ${STACK_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} || true"
+                    sh "aws cloudformation wait stack-delete-complete --stack-name ${STACK_UFV} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} || true"
+                    echo "✅ Stack UFV eliminado"
+
+                    // 3. Stack Personal
+                    sh "aws cloudformation delete-stack --stack-name ${STACK_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} || true"
+                    sh "aws cloudformation wait stack-delete-complete --stack-name ${STACK_PERSONAL} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_PERSONAL} || true"
+                    echo "✅ Stack Personal eliminado"
+
+                    // 4. Stack prereq UFV
+                    sh "aws cloudformation delete-stack --stack-name ${STACK_UFV_PREREQ} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} || true"
+                    sh "aws cloudformation wait stack-delete-complete --stack-name ${STACK_UFV_PREREQ} --region ${params.AWS_REGION} --profile ${AWS_PROFILE_UFV} || true"
+                    echo "✅ Stack prereq eliminado"
+
+                    echo "🗑️  Todo eliminado"
+                }
+            }
+        }
+    }
+
+    post {
+        success { echo "✅ Pipeline completado con exito" }
+        failure { echo "❌ Pipeline fallido. Revisa los logs." }
+    }
+}

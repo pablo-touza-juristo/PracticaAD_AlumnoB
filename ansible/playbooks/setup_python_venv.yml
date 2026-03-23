@@ -1,0 +1,47 @@
+---
+# =============================================================
+# Playbook: setup_python_venv.yml
+# Crea un virtualenv Python 3.12 en todos los servidores nginx
+# =============================================================
+
+- name: Instalar Python venv en servidores nginx
+  hosts: nginx
+  gather_facts: yes
+
+  vars:
+    venv_path:    "/opt/venv/app"
+    venv_owner:   "nginx"
+    venv_packages:
+      - boto3
+      - requests
+      - flask
+      - gunicorn
+      - psycopg2-binary
+      - python-dotenv
+      - pyyaml
+
+  pre_tasks:
+    - name: Mostrar info del host
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Nombre: {{ instance_name | default('N/A') }}"
+          - "Cuenta: {{ account | default('N/A') }}"
+          - "Venv destino: {{ venv_path }}"
+
+    - name: Asegurar que nginx esta corriendo
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+  roles:
+    - role: python_venv
+
+  post_tasks:
+    - name: Resumen del venv instalado
+      ansible.builtin.debug:
+        msg:
+          - "✅ Venv instalado en {{ inventory_hostname }}"
+          - "Ruta: {{ venv_path }}"
+          - "Activar con: source {{ venv_path }}/bin/activate"

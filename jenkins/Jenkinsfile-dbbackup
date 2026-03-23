@@ -1,0 +1,175 @@
+// =============================================================
+// Pipeline: AWS-UFV-DB-Backup-Restore
+// Backup y restauración de PostgreSQL contra S3 (eu-west-1)
+// =============================================================
+
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['dump', 'list', 'restore'],
+            description: '''Operación a realizar:
+  dump    - Vuelca datos del esquema academico y sube a S3
+  list    - Lista los dumps disponibles en S3
+  restore - Descarga un dump de S3 y restaura la BD'''
+        )
+        string(
+            name: 'S3_BUCKET',
+            defaultValue: 'ufv-postgres-backups',
+            description: 'Nombre del bucket S3 donde se guardan los dumps'
+        )
+        string(
+            name: 'S3_DUMP_FILE',
+            defaultValue: '',
+            description: '[Solo para restore] Nombre del fichero a restaurar (ej: dump_academico_20260322T120000.sql.gz). Ejecuta primero ACTION=list para ver los disponibles.'
+        )
+        booleanParam(
+            name: 'CREATE_BUCKET_IF_NOT_EXISTS',
+            defaultValue: false,
+            description: 'Crear el bucket S3 en eu-west-1 si no existe (solo la primera vez)'
+        )
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Modo check: muestra qué haría sin ejecutar cambios'
+        )
+        booleanParam(
+            name: 'VERBOSE',
+            defaultValue: false,
+            description: 'Salida verbose (-vv)'
+        )
+    }
+
+    environment {
+        ANSIBLE_DIR               = '/usr/local/ufv/ufv-infra/ansible'
+        ANSIBLE_CFG               = '/usr/local/ufv/ufv-infra/ansible/ansible.cfg'
+        INVENTORY                 = '/usr/local/ufv/ufv-infra/ansible/inventory/aws_inventory.sh'
+        ANSIBLE_FORCE_COLOR       = 'true'
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        ANSIBLE_COLLECTIONS_PATHS = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/ua4192/.ansible/collections:/usr/share/ansible/collections'
+        AWS_PROFILE               = 'AlexPersonal'
+        AWS_REGION_BUCKET         = 'eu-west-1'
+    }
+
+    stages {
+
+        stage('Verificar entorno') {
+            steps {
+                sh '''
+                    echo "=== Accion: ${ACTION} ==="
+                    echo "=== Bucket: ${S3_BUCKET} ==="
+                    chmod +x ${INVENTORY}
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                      ansible-inventory -i ${INVENTORY} --graph | grep postgres
+                    aws sts get-caller-identity \
+                      --profile ${AWS_PROFILE} --region ${AWS_REGION_BUCKET}
+                '''
+            }
+        }
+
+        stage('Crear bucket S3 si no existe') {
+            when {
+                expression { params.CREATE_BUCKET_IF_NOT_EXISTS }
+            }
+            steps {
+                sh '''
+                    echo "=== Verificando bucket ${S3_BUCKET} en ${AWS_REGION_BUCKET} ==="
+
+                    if aws s3api head-bucket \
+                        --bucket "${S3_BUCKET}" \
+                        --profile ${AWS_PROFILE} \
+                        --region ${AWS_REGION_BUCKET} 2>/dev/null; then
+                        echo "✅ Bucket ya existe"
+                    else
+                        echo "Creando bucket ${S3_BUCKET} en ${AWS_REGION_BUCKET}..."
+                        aws s3api create-bucket \
+                            --bucket "${S3_BUCKET}" \
+                            --profile ${AWS_PROFILE} \
+                            --region ${AWS_REGION_BUCKET} \
+                            --create-bucket-configuration LocationConstraint=${AWS_REGION_BUCKET}
+
+                        # Bloquear acceso publico
+                        aws s3api put-public-access-block \
+                            --bucket "${S3_BUCKET}" \
+                            --profile ${AWS_PROFILE} \
+                            --region ${AWS_REGION_BUCKET} \
+                            --public-access-block-configuration \
+                              "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+                        # Habilitar versionado
+                        aws s3api put-bucket-versioning \
+                            --bucket "${S3_BUCKET}" \
+                            --profile ${AWS_PROFILE} \
+                            --region ${AWS_REGION_BUCKET} \
+                            --versioning-configuration Status=Enabled
+
+                        # Lifecycle: mover a Glacier tras 30 dias, borrar tras 365
+                        aws s3api put-bucket-lifecycle-configuration \
+                            --bucket "${S3_BUCKET}" \
+                            --profile ${AWS_PROFILE} \
+                            --region ${AWS_REGION_BUCKET} \
+                            --lifecycle-configuration '{
+                              "Rules": [{
+                                "ID": "archive-old-dumps",
+                                "Status": "Enabled",
+                                "Filter": {"Prefix": "postgres-dumps/"},
+                                "Transitions": [{
+                                  "Days": 30,
+                                  "StorageClass": "GLACIER"
+                                }],
+                                "Expiration": {"Days": 365}
+                              }]
+                            }'
+
+                        echo "✅ Bucket ${S3_BUCKET} creado en ${AWS_REGION_BUCKET}"
+                        echo "   - Acceso publico bloqueado"
+                        echo "   - Versionado habilitado"
+                        echo "   - Lifecycle: Glacier a los 30 dias, borrado a los 365"
+                    fi
+                '''
+            }
+        }
+
+        stage('Ejecutar operacion') {
+            steps {
+                script {
+                    def checkArg = params.DRY_RUN ? '--check' : ''
+                    def verbArg  = params.VERBOSE ? '-vv' : '-v'
+                    def restoreArg = (params.ACTION == 'restore' && params.S3_DUMP_FILE)
+                        ? "-e \"s3_dump_file=${params.S3_DUMP_FILE}\"" : ''
+
+                    sh """
+                        ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                        ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/playbooks/db_backup_restore.yml \
+                            -e "db_action=${params.ACTION}" \
+                            -e "s3_bucket_name=${params.S3_BUCKET}" \
+                            ${restoreArg} \
+                            ${checkArg} ${verbArg} \
+                            2>&1
+                    """
+                }
+            }
+        }
+
+    }
+
+    post {
+        success {
+            script {
+                def msgs = [
+                    dump:    "✅ Dump completado y subido a s3://${params.S3_BUCKET}/postgres-dumps/",
+                    list:    "✅ Listado de dumps completado",
+                    restore: "✅ Restauración completada desde ${params.S3_DUMP_FILE}"
+                ]
+                echo msgs[params.ACTION] ?: "✅ Operacion completada"
+            }
+        }
+        failure {
+            echo "❌ La operacion '${ACTION}' ha fallado. Revisa los logs."
+        }
+    }
+}

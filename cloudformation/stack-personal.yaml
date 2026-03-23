@@ -1,0 +1,437 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack AlexPersonal - VPC 10.0.0.0/16
+
+Parameters:
+  PeerVpcId:
+    Type: String
+    Default: ""
+  PeerAccountId:
+    Type: String
+    Default: ""
+  PeerVpcCidr:
+    Type: String
+    Default: "10.1.0.0/16"
+  PeerRoleArn:
+    Type: String
+    Default: ""
+  MyPublicIp:
+    Type: String
+  KeyPairName:
+    Type: String
+  AmiId:
+    Type: String
+    Default: "ami-073422177b6b3ed22"
+  AmiIdWindows:
+    Type: String
+    Default: "ami-0349104b138bf332c"
+  BackupBucketName:
+    Type: String
+    Default: "ufv-postgres-backups"
+    Description: "Nombre del bucket S3 en eu-west-1 donde se guardan los dumps"
+
+Conditions:
+  HasPeerVpc: !Not [!Equals [!Ref PeerVpcId, ""]]
+
+Resources:
+
+  # ── IAM Role para EC2 PostgreSQL → acceso S3 backups ─────────
+  PostgresBackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "postgres-backup-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3BackupAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub "arn:aws:s3:::*"
+                  - !Sub "arn:aws:s3:::*/*"
+              - Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:PutBucketVersioning
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:PutLifecycleConfiguration
+                Resource:
+                  - !Sub "arn:aws:s3:::*"
+      Tags:
+        - Key: Name
+          Value: postgres-backup-role
+
+  PostgresInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "postgres-backup-profile-${AWS::StackName}"
+      Roles:
+        - !Ref PostgresBackupRole
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: vpc-personal
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  SubnetPublic:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: subnet-personal-public
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: rt-personal
+
+  RouteInternet:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  RoutePeering:
+    Type: AWS::EC2::Route
+    Condition: HasPeerVpc
+    DependsOn: VpcPeeringConnection
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: !Ref PeerVpcCidr
+      VpcPeeringConnectionId: !Ref VpcPeeringConnection
+
+  # CRITICO: asociar explicitamente la subnet a NUESTRA route table
+  # sin esto CloudFormation deja la subnet en la RT por defecto
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - SubnetPublic
+      - RouteTable
+      - RouteInternet
+    Properties:
+      SubnetId: !Ref SubnetPublic
+      RouteTableId: !Ref RouteTable
+
+  VpcPeeringConnection:
+    Type: AWS::EC2::VPCPeeringConnection
+    Condition: HasPeerVpc
+    Properties:
+      VpcId: !Ref VPC
+      PeerVpcId: !Ref PeerVpcId
+      PeerOwnerId: !Ref PeerAccountId
+      PeerRoleArn: !Ref PeerRoleArn
+      Tags:
+        - Key: Name
+          Value: peering-personal-to-ufv
+
+  SGLinux:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPC
+    Properties:
+      GroupDescription: SG Linux AlexPersonal
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Todo el trafico desde la maquina Jenkins/DevOps
+        - {IpProtocol: -1, CidrIp: !Ref MyPublicIp, Description: "Todo desde Jenkins/DevOps"}
+        # Todo el trafico desde el peering con AlexUFV
+        - {IpProtocol: -1, CidrIp: 10.1.0.0/16, Description: "Todo desde AlexUFV via peering"}
+        # HTTP publico
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: "HTTP publico"}
+      SecurityGroupEgress:
+        - {IpProtocol: -1, CidrIp: 0.0.0.0/0}
+      Tags:
+        - Key: Name
+          Value: sg-personal-linux
+
+  SGWindows:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: VPC
+    Properties:
+      GroupDescription: SG Windows DC01 AlexPersonal
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Todo el trafico desde la maquina Jenkins/DevOps
+        - {IpProtocol: -1, CidrIp: !Ref MyPublicIp, Description: "Todo desde Jenkins/DevOps"}
+        # Todo el trafico desde el peering con AlexUFV
+        - {IpProtocol: -1, CidrIp: 10.1.0.0/16, Description: "Todo desde AlexUFV via peering"}
+        # Todo el trafico desde la propia VPC Personal (AD/DNS/NTP interno)
+        - {IpProtocol: -1, CidrIp: 10.0.0.0/16, Description: "Todo desde VPC Personal"}
+      SecurityGroupEgress:
+        - {IpProtocol: -1, CidrIp: 0.0.0.0/0}
+      Tags:
+        - Key: Name
+          Value: sg-personal-windows
+
+  EC2Postgres:
+    Type: AWS::EC2::Instance
+    DependsOn: SubnetRouteTableAssociation
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyPairName
+      ImageId: !Ref AmiId
+      SubnetId: !Ref SubnetPublic
+      PrivateIpAddress: 10.0.1.10
+      IamInstanceProfile: !Ref PostgresInstanceProfile
+      SecurityGroupIds:
+        - !Ref SGLinux
+      Tags:
+        - Key: Name
+          Value: ec2-postgres-personal
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          exec > /var/log/userdata.log 2>&1
+          set -xe
+          dnf update -y
+          dnf install -y postgresql15-server postgresql15 aws-cli htop wget git --allowerasing
+          postgresql-setup --initdb
+          PG_CONF=$(find /var/lib/pgsql -name postgresql.conf | head -1)
+          PG_HBA=$(find /var/lib/pgsql -name pg_hba.conf | head -1)
+          sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" $PG_CONF
+          echo "host academico backend 10.1.0.0/16 md5" >> $PG_HBA
+          echo "host academico backend 10.0.0.0/16 md5" >> $PG_HBA
+          echo "host all postgres 10.1.0.0/16 md5"      >> $PG_HBA
+          echo "host all postgres 10.0.0.0/16 md5"      >> $PG_HBA
+          DB_USER="backend"
+          DB_NAME="academico"
+          DB_PASS="ContraseñaSegura123"
+          systemctl enable postgresql
+          systemctl start postgresql
+          sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres123';"
+          sudo -u postgres psql -c "DO \$\$BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${DB_USER}') THEN CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASS}'; END IF; END\$\$;"
+          sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+          sudo -u postgres psql -d ${DB_NAME} << 'SQLEOF'
+          CREATE SCHEMA IF NOT EXISTS academico;
+          CREATE TABLE IF NOT EXISTS academico.asignaturas (
+              id SERIAL PRIMARY KEY,
+              nombre VARCHAR(100) NOT NULL,
+              descripcion TEXT,
+              creditos INT NOT NULL,
+              fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE TABLE IF NOT EXISTS academico.alumnos (
+              id SERIAL PRIMARY KEY,
+              nombre VARCHAR(100) NOT NULL,
+              email VARCHAR(100) UNIQUE NOT NULL,
+              fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE TABLE IF NOT EXISTS academico.inscripciones (
+              id SERIAL PRIMARY KEY,
+              alumno_id INT NOT NULL REFERENCES academico.alumnos(id) ON DELETE CASCADE,
+              asignatura_id INT NOT NULL REFERENCES academico.asignaturas(id) ON DELETE CASCADE,
+              nota NUMERIC(4,2),
+              fecha_inscripcion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(alumno_id, asignatura_id)
+          );
+          CREATE TABLE IF NOT EXISTS academico.practicas (
+              id SERIAL PRIMARY KEY,
+              asignatura_id INT NOT NULL REFERENCES academico.asignaturas(id) ON DELETE CASCADE,
+              titulo VARCHAR(150) NOT NULL,
+              descripcion TEXT,
+              fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              fecha_limite DATE
+          );
+          CREATE TABLE IF NOT EXISTS academico.entregas (
+              id SERIAL PRIMARY KEY,
+              practica_id INT NOT NULL REFERENCES academico.practicas(id) ON DELETE CASCADE,
+              alumno_id INT NOT NULL REFERENCES academico.alumnos(id) ON DELETE CASCADE,
+              fecha_entrega TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              calificacion NUMERIC(4,2),
+              comentario TEXT,
+              UNIQUE(practica_id, alumno_id)
+          );
+          GRANT USAGE ON SCHEMA academico TO backend;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA academico TO backend;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA academico TO backend;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA academico GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO backend;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA academico GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO backend;
+          SQLEOF
+          useradd -m -s /bin/bash ansible
+          echo "ansible:Airbusds2026" | chpasswd
+          echo "ansible ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ansible
+          chmod 0440 /etc/sudoers.d/ansible
+          sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          systemctl restart sshd
+          echo "UserData PostgreSQL OK"
+
+  EC2NginxPersonal:
+    Type: AWS::EC2::Instance
+    DependsOn: SubnetRouteTableAssociation
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyPairName
+      ImageId: !Ref AmiId
+      SubnetId: !Ref SubnetPublic
+      PrivateIpAddress: 10.0.1.11
+      SecurityGroupIds:
+        - !Ref SGLinux
+      Tags:
+        - Key: Name
+          Value: ec2-nginx-personal
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          exec > /var/log/userdata.log 2>&1
+          set -xe
+          dnf update -y
+          dnf install -y nginx aws-cli htop wget git --allowerasing
+          systemctl enable nginx
+          systemctl start nginx
+          dnf install -y python3.12 python3.12-pip python3.12-devel --allowerasing
+          /usr/bin/python3.12 -m pip install --upgrade pip
+          /usr/bin/python3.12 -m pip install boto3 requests psycopg2-binary flask
+          cat > /etc/nginx/conf.d/app.conf << 'NGINXEOF'
+          server {
+              listen 80;
+              server_name _;
+              location / {
+                  proxy_pass http://127.0.0.1:8000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+          }
+          NGINXEOF
+          systemctl reload nginx
+          useradd -m -s /bin/bash ansible
+          echo "ansible:Airbusds2026" | chpasswd
+          echo "ansible ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ansible
+          chmod 0440 /etc/sudoers.d/ansible
+          sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          systemctl restart sshd
+          echo "UserData Nginx Personal OK"
+
+  EC2Windows:
+    Type: AWS::EC2::Instance
+    DependsOn: SubnetRouteTableAssociation
+    Properties:
+      InstanceType: t3.small
+      KeyName: !Ref KeyPairName
+      ImageId: !Ref AmiIdWindows
+      SubnetId: !Ref SubnetPublic
+      PrivateIpAddress: 10.0.1.12
+      SecurityGroupIds:
+        - !Ref SGWindows
+      Tags:
+        - Key: Name
+          Value: ec2-windows-dc01
+      UserData:
+        Fn::Base64: |
+          <powershell>
+          $LogFile = "C:\postinstall.log"
+          "==== Inicio del post-install $(Get-Date)" | Out-File $LogFile -Encoding UTF8
+
+          # ── AWS CLI ──────────────────────────────────────────────
+          "Instalando AWS CLI" | Out-File $LogFile -Append
+          Invoke-WebRequest "https://awscli.amazonaws.com/AWSCLIV2.msi" -OutFile "C:\AWSCLIV2.msi"
+          Start-Process msiexec.exe -Wait -ArgumentList '/i C:\AWSCLIV2.msi /quiet'
+          "AWS CLI instalado" | Out-File $LogFile -Append
+
+          # ── WinRM completo ────────────────────────────────────────
+          "Configurando WinRM" | Out-File $LogFile -Append
+          Set-WSManQuickConfig -Force
+          winrm quickconfig -q
+          winrm set winrm/config/service '@{AllowUnencrypted="true"}'
+          winrm set winrm/config/service/auth '@{Basic="true"}'
+          winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="1024"}'
+          Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
+          Enable-PSRemoting -Force
+
+          # Regla de firewall explicita para WinRM HTTP
+          New-NetFirewallRule -Name "WinRM-HTTP-5985" `
+              -DisplayName "WinRM HTTP 5985" `
+              -Protocol TCP -LocalPort 5985 `
+              -Action Allow -Direction Inbound -ErrorAction SilentlyContinue
+
+          # Desactivar la regla que restringe WinRM a localhost si existe
+          Set-NetFirewallRule -Name "WINRM-HTTP-In-TCP" -RemoteAddress Any -ErrorAction SilentlyContinue
+
+          # Asegurarse de que WinRM arranca automaticamente
+          Set-Service winrm -StartupType Automatic
+          Start-Service winrm
+          "WinRM configurado y arrancado" | Out-File $LogFile -Append
+
+          # ── Usuario Ansible ───────────────────────────────────────
+          "Creando usuario ansible" | Out-File $LogFile -Append
+          $Password = ConvertTo-SecureString "Airbusds2026" -AsPlainText -Force
+          New-LocalUser -Name "ansible" -Password $Password -FullName "Ansible User" -Description "Usuario para Ansible" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "ansible" -ErrorAction SilentlyContinue
+          Set-LocalUser -Name "ansible" -PasswordNeverExpires $true
+          "Usuario ansible creado" | Out-File $LogFile -Append
+
+          # ── Renombrar equipo ──────────────────────────────────────
+          Rename-Computer -NewName "DC01" -Force -ErrorAction SilentlyContinue
+          "Equipo renombrado a DC01" | Out-File $LogFile -Append
+
+          # ── Verificar WinRM antes de reiniciar ────────────────────
+          $winrmStatus = (Get-Service winrm).Status
+          "Estado WinRM antes de reboot: $winrmStatus" | Out-File $LogFile -Append
+          $listening = netstat -an | Select-String "5985"
+          "Puerto 5985: $listening" | Out-File $LogFile -Append
+
+          "Reiniciando equipo $(Get-Date)" | Out-File $LogFile -Append
+          Restart-Computer -Force
+          </powershell>
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Export:
+      Name: personal-vpc-id
+  SubnetId:
+    Value: !Ref SubnetPublic
+    Export:
+      Name: personal-subnet-id
+  RouteTableId:
+    Value: !Ref RouteTable
+    Export:
+      Name: personal-rt-id
+  VpcPeeringConnectionId:
+    Condition: HasPeerVpc
+    Value: !Ref VpcPeeringConnection
+    Export:
+      Name: personal-peering-id
+  EC2PostgresPrivateIp:
+    Value: 10.0.1.10
+  EC2NginxPrivateIp:
+    Value: 10.0.1.11
+  EC2WindowsPrivateIp:
+    Value: 10.0.1.12

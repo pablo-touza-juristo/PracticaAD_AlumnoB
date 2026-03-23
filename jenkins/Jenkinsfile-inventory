@@ -1,0 +1,155 @@
+// =============================================================
+// Pipeline: Actualizar Inventario Ansible
+// Refresca el inventario dinamico AWS y verifica conectividad
+// =============================================================
+
+pipeline {
+    agent any
+
+    parameters {
+        booleanParam(name: 'VERIFY_CONNECTIVITY', defaultValue: true,
+            description: 'Hacer ping a todos los hosts tras actualizar inventario')
+        booleanParam(name: 'SHOW_FACTS',          defaultValue: false,
+            description: 'Recoger y mostrar facts de todos los hosts (mas lento)')
+    }
+
+    environment {
+        ANSIBLE_DIR     = '/usr/local/ufv/ufv-infra/ansible'
+        ANSIBLE_CFG     = '/usr/local/ufv/ufv-infra/ansible/ansible.cfg'
+        INVENTORY       = '/usr/local/ufv/ufv-infra/ansible/inventory/aws_inventory.sh'
+        ANSIBLE_FORCE_COLOR = 'true'
+    }
+
+    stages {
+
+        stage('Verificar entorno Ansible') {
+            steps {
+                sh '''
+                    echo "=== Versions ==="
+                    ansible --version
+                    python3 --version
+                    aws --version
+                    echo "=== Credenciales AWS ==="
+                    aws sts get-caller-identity --profile AlexPersonal --region eu-south-2
+                    aws sts get-caller-identity --profile AlexUFV      --region eu-south-2
+                '''
+            }
+        }
+
+        stage('Generar inventario dinamico') {
+            steps {
+                sh '''
+                    chmod +x ${INVENTORY}
+                    echo "=== Inventario raw ==="
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} ${INVENTORY}
+                '''
+            }
+        }
+
+        stage('Validar inventario con Ansible') {
+            steps {
+                sh '''
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                    ansible-inventory \
+                        -i ${INVENTORY} \
+                        --list \
+                        --yaml \
+                        2>&1 | head -80
+                '''
+            }
+        }
+
+        stage('Mostrar grupos del inventario') {
+            steps {
+                sh '''
+                    echo "=== Hosts por grupo ==="
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                    ansible-inventory -i ${INVENTORY} --graph
+                '''
+            }
+        }
+
+        stage('Verificar conectividad') {
+            when { expression { params.VERIFY_CONNECTIVITY } }
+            parallel {
+                stage('Ping Linux Personal') {
+                    steps {
+                        sh '''
+                            ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                            ansible linux_personal \
+                                -i ${INVENTORY} \
+                                -m ping \
+                                --timeout 10 \
+                                2>&1 || true
+                        '''
+                    }
+                }
+                stage('Ping Linux UFV') {
+                    steps {
+                        sh '''
+                            ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                            ansible linux_ufv \
+                                -i ${INVENTORY} \
+                                -m ping \
+                                --timeout 10 \
+                                2>&1 || true
+                        '''
+                    }
+                }
+                stage('Ping Windows') {
+                    steps {
+                        sh '''
+                            ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                            ansible windows_personal \
+                                -i ${INVENTORY} \
+                                -m ansible.windows.win_ping \
+                                --timeout 15 \
+                                2>&1 || true
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Recoger facts completos') {
+            when { expression { params.SHOW_FACTS } }
+            steps {
+                sh '''
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                    ansible-playbook \
+                        -i ${INVENTORY} \
+                        ${ANSIBLE_DIR}/playbooks/update_inventory.yml \
+                        -v || true
+                '''
+            }
+        }
+
+        stage('Guardar inventario estatico') {
+            steps {
+                sh '''
+                    ANSIBLE_CONFIG=${ANSIBLE_CFG} \
+                    ${INVENTORY} > /tmp/inventory_snapshot.json
+
+                    echo "=== Snapshot guardado en /tmp/inventory_snapshot.json ==="
+
+                    cat > /tmp/show_inventory.py << 'PYEOF'
+import json
+with open('/tmp/inventory_snapshot.json') as f:
+    inv = json.load(f)
+groups = {k: v for k, v in inv.items() if k != '_meta'}
+for group, data in groups.items():
+    if isinstance(data, dict) and 'hosts' in data:
+        hosts = data['hosts']
+        print(f'{group}: {hosts}')
+PYEOF
+                    python3 /tmp/show_inventory.py
+                '''
+                archiveArtifacts artifacts: '/tmp/inventory_snapshot.json', allowEmptyArchive: true
+            }
+        }
+    }
+
+    post {
+        always { echo "✅ Inventario procesado" }
+    }
+}

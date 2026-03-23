@@ -1,0 +1,100 @@
+---
+# =============================================================
+# Playbook: configure_dns_clients.yml
+# Configura DNS + NTP (chrony) en instancias Linux
+# =============================================================
+
+- name: Configurar DNS en instancias Linux
+  hosts: linux_personal:linux_ufv
+  gather_facts: yes
+
+  vars:
+    dns_server_ip: "10.0.1.12"   # IP de DC01
+    dns_domain:    "corp.ufv.local"
+    ntp_server_ip: "10.0.1.10"
+
+  tasks:
+    - name: Configurar resolv.conf
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: |
+          # Gestionado por Ansible
+          domain {{ dns_domain }}
+          search {{ dns_domain }}
+          nameserver {{ dns_server_ip }}
+          nameserver 8.8.8.8
+        backup: yes
+
+    - name: Evitar que NetworkManager sobreescriba resolv.conf
+      ansible.builtin.lineinfile:
+        path: /etc/NetworkManager/NetworkManager.conf
+        insertafter: '^\[main\]'
+        line: 'dns=none'
+        regexp: '^dns='
+        create: no
+      notify: restart NetworkManager
+      ignore_errors: yes
+      when: ansible_facts['files'] is not defined or True
+      failed_when: false
+
+    # =============================
+    # 🔥 NUEVO: Configuración NTP
+    # =============================
+
+    - name: Configurar chrony para usar DC como NTP
+      ansible.builtin.copy:
+        dest: /etc/chrony.conf
+        content: |
+          # Gestionado por Ansible
+          server {{ ntp_server_ip }} iburst
+          driftfile /var/lib/chrony/drift
+          makestep 1.0 3
+          rtcsync
+          logdir /var/log/chrony
+        backup: yes
+      notify: restart chrony
+
+    - name: Asegurar que chrony está instalado
+      ansible.builtin.package:
+        name: chrony
+        state: present
+
+    - name: Asegurar que chrony está activo
+      ansible.builtin.systemd:
+        name: chronyd
+        state: started
+        enabled: yes
+
+    - name: Verificar sincronización NTP
+      ansible.builtin.command:
+        cmd: chronyc sources
+      register: ntp_check
+      changed_when: false
+
+    - name: Mostrar estado NTP
+      ansible.builtin.debug:
+        var: ntp_check.stdout_lines
+
+    # =============================
+
+    - name: Verificar resolucion DNS
+      ansible.builtin.command:
+        cmd: "nslookup dc01.{{ dns_domain }} {{ dns_server_ip }}"
+      register: dns_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Mostrar resultado DNS
+      ansible.builtin.debug:
+        var: dns_check.stdout_lines
+
+  handlers:
+    - name: restart NetworkManager
+      ansible.builtin.systemd:
+        name: NetworkManager
+        state: restarted
+
+    - name: restart chrony
+      ansible.builtin.systemd:
+        name: chronyd
+        state: restarted

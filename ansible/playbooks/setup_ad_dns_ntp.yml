@@ -1,0 +1,44 @@
+---
+# =============================================================
+# Playbook: setup_ad_dns_ntp.yml
+# Convierte DC01 en Active Directory + DNS + NTP server
+# =============================================================
+
+- name: Configurar AD DS + DNS + NTP en DC01
+  hosts: windows_personal
+  gather_facts: yes
+
+  vars:
+    ad_domain_name:       "corp.ufv.local"
+    ad_netbios_name:      "CORPUFV"
+    ad_safe_mode_password: "Airbusds2026!"   # Minimo 8 chars con mayus+num+especial
+
+  pre_tasks:
+    - name: Verificar que es Windows Server
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Windows"
+        fail_msg: "Este playbook solo se ejecuta en Windows Server"
+
+    - name: Mostrar info del servidor
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Dominio objetivo: {{ ad_domain_name }}"
+
+  roles:
+    - role: ad_setup
+
+  post_tasks:
+    - name: Configurar clientes Linux para usar este DNS
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          AD/DNS/NTP configurado en {{ inventory_hostname }}
+          Dominio: {{ ad_domain_name }}
+
+          Para que las maquinas Linux usen este DNS, ejecuta el
+          playbook configure_dns_clients.yml o añade manualmente:
+            echo "nameserver 10.0.1.12" >> /etc/resolv.conf
+          ============================================================

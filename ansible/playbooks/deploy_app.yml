@@ -1,0 +1,201 @@
+---
+# =============================================================
+# Playbook: deploy_app.yml
+# Despliega nginx config + web estaticos + servicio Node.js
+# AlexPersonal: nginx config + web public
+# AlexUFV:      nginx config + web public + node service
+# =============================================================
+
+# ── AlexPersonal: nginx + estaticos ──────────────────────────
+- name: Desplegar nginx en AlexPersonal
+  hosts: "linux_personal"
+  gather_facts: yes
+
+  vars:
+    src_nginx_conf: "/usr/local/ufv/ufv-infra/ufv-app/nginx/AlexPersonal_nginx.conf"
+    src_public:     "/usr/local/ufv/ufv-infra/ufv-app/public"
+    dst_public:     "/var/www/public"
+    dst_nginx_conf: "/etc/nginx/nginx.conf"
+
+  tasks:
+    - name: Crear directorio /var/www/public si no existe
+      ansible.builtin.file:
+        path: "{{ dst_public }}"
+        state: directory
+        owner: nginx
+        group: nginx
+        mode: '0755'
+      when: inventory_hostname in groups['nginx']
+
+    - name: Copiar nginx.conf desde AlexPersonal_nginx.conf
+      ansible.builtin.copy:
+        src: "{{ src_nginx_conf }}"
+        dest: "{{ dst_nginx_conf }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: reload nginx
+      when: inventory_hostname in groups['nginx']
+
+    - name: Copiar contenido web estatico a /var/www/public
+      ansible.builtin.copy:
+        src: "{{ src_public }}/"
+        dest: "{{ dst_public }}/"
+        owner: nginx
+        group: nginx
+        mode: '0644'
+        directory_mode: '0755'
+      notify: reload nginx
+      when: inventory_hostname in groups['nginx']
+
+    - name: Asegurar que nginx esta arrancado y habilitado
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+        enabled: yes
+      when: inventory_hostname in groups['nginx']
+
+  handlers:
+    - name: reload nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+
+# ── AlexUFV: nginx + estaticos + Node.js service ──────────────
+- name: Desplegar nginx y Node.js en AlexUFV
+  hosts: linux_ufv
+  gather_facts: yes
+
+  vars:
+    src_nginx_conf:  "/usr/local/ufv/ufv-infra/ufv-app/nginx/AlexUFV_nginx.conf"
+    src_public:      "/usr/local/ufv/ufv-infra/ufv-app/public"
+    dst_public:      "/var/www/public"
+    dst_nginx_conf:  "/etc/nginx/nginx.conf"
+    src_node_pkg:    "/usr/local/ufv/ufv-infra/ufv-app/node/package.json"
+    src_node_app:    "/usr/local/ufv/ufv-infra/ufv-app/node/profesores.js"
+    dst_node_dir:    "/usr/local/ufv/nodeService"
+    node_service:    "ufvNodeService"
+
+  tasks:
+    - name: Crear directorio /var/www/public si no existe
+      ansible.builtin.file:
+        path: "{{ dst_public }}"
+        state: directory
+        owner: nginx
+        group: nginx
+        mode: '0755'
+
+    - name: Copiar nginx.conf desde AlexUFV_nginx.conf
+      ansible.builtin.copy:
+        src: "{{ src_nginx_conf }}"
+        dest: "{{ dst_nginx_conf }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: reload nginx
+
+    - name: Copiar contenido web estatico a /var/www/public
+      ansible.builtin.copy:
+        src: "{{ src_public }}/"
+        dest: "{{ dst_public }}/"
+        owner: nginx
+        group: nginx
+        mode: '0644'
+        directory_mode: '0755'
+      notify: reload nginx
+
+    - name: Asegurar que nginx esta arrancado y habilitado
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Crear directorio del servicio Node.js
+      ansible.builtin.file:
+        path: "{{ dst_node_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copiar package.json
+      ansible.builtin.copy:
+        src: "{{ src_node_pkg }}"
+        dest: "{{ dst_node_dir }}/package.json"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Copiar profesores.js
+      ansible.builtin.copy:
+        src: "{{ src_node_app }}"
+        dest: "{{ dst_node_dir }}/profesores.js"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart node service
+
+    - name: Instalar dependencias npm
+      ansible.builtin.command:
+        cmd: npm install
+        chdir: "{{ dst_node_dir }}"
+      register: npm_result
+      changed_when: "'added' in npm_result.stdout"
+
+    - name: Crear fichero de servicio systemd para ufvNodeService
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ node_service }}.service"
+        content: |
+          [Unit]
+          Description=UFV Node.js Service - Profesores
+          After=network.target
+
+          [Service]
+          Type=simple
+          WorkingDirectory={{ dst_node_dir }}
+          ExecStart=/usr/bin/node {{ dst_node_dir }}/profesores.js
+          Restart=on-failure
+          RestartSec=10
+          StandardOutput=journal
+          StandardError=journal
+          Environment=NODE_ENV=production
+
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart node service
+
+    - name: Recargar systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Habilitar y arrancar ufvNodeService
+      ansible.builtin.systemd:
+        name: "{{ node_service }}"
+        state: started
+        enabled: yes
+
+    - name: Verificar estado del servicio Node
+      ansible.builtin.command:
+        cmd: "systemctl status {{ node_service }} --no-pager"
+      register: node_status
+      changed_when: false
+      failed_when: false
+
+    - name: Mostrar estado del servicio Node
+      ansible.builtin.debug:
+        var: node_status.stdout_lines
+
+  handlers:
+    - name: reload nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+
+    - name: restart node service
+      ansible.builtin.systemd:
+        name: "{{ node_service }}"
+        state: restarted
+        daemon_reload: yes

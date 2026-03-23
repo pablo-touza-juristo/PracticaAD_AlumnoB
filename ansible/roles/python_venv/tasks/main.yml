@@ -1,0 +1,75 @@
+---
+# =============================================================
+# Role: python_venv
+# Crea un virtualenv Python 3.12 en servidores nginx
+# =============================================================
+
+- name: Asegurar que python3.12 y venv estan instalados
+  ansible.builtin.dnf:
+    name:
+      - python3.12
+      - python3.12-pip
+      - python3.12-devel
+    state: present
+    allowerasing: yes
+
+- name: Crear directorio del venv
+  ansible.builtin.file:
+    path: "{{ venv_path }}"
+    state: directory
+    owner: "{{ venv_owner }}"
+    group: "{{ venv_owner }}"
+    mode: '0755'
+
+- name: Crear virtualenv
+  ansible.builtin.command:
+    cmd: "/usr/bin/python3.12 -m venv {{ venv_path }}"
+    creates: "{{ venv_path }}/bin/activate"
+  become_user: "{{ venv_owner }}"
+
+- name: Actualizar pip en el venv
+  ansible.builtin.pip:
+    name: pip
+    state: latest
+    virtualenv: "{{ venv_path }}"
+    virtualenv_python: /usr/bin/python3.12
+  become_user: "{{ venv_owner }}"
+
+- name: Instalar paquetes en el venv
+  ansible.builtin.pip:
+    name: "{{ venv_packages }}"
+    state: present
+    virtualenv: "{{ venv_path }}"
+    virtualenv_python: /usr/bin/python3.12
+  become_user: "{{ venv_owner }}"
+  when: venv_packages | length > 0
+
+- name: Crear script de activacion global
+  ansible.builtin.copy:
+    dest: /etc/profile.d/venv_app.sh
+    content: |
+      # Activa el venv de la aplicacion si existe
+      if [ -f "{{ venv_path }}/bin/activate" ]; then
+          export VIRTUAL_ENV="{{ venv_path }}"
+          export PATH="{{ venv_path }}/bin:$PATH"
+      fi
+    mode: '0644'
+
+- name: Verificar venv creado correctamente
+  ansible.builtin.command:
+    cmd: "{{ venv_path }}/bin/python --version"
+  register: venv_version
+  changed_when: false
+
+- name: Listar paquetes instalados en el venv
+  ansible.builtin.command:
+    cmd: "{{ venv_path }}/bin/pip list"
+  register: pip_list
+  changed_when: false
+
+- name: Mostrar resultado
+  ansible.builtin.debug:
+    msg:
+      - "Venv: {{ venv_path }}"
+      - "Python: {{ venv_version.stdout }}"
+      - "Paquetes: {{ pip_list.stdout_lines }}"

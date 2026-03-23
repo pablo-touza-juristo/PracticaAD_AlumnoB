@@ -1,0 +1,152 @@
+---
+# =============================================================
+# Role: ad_setup
+# Instala y configura AD DS, DNS y NTP en Windows Server 2019
+# =============================================================
+
+- name: Instalar modulos de Windows necesarios
+  ansible.windows.win_feature:
+    name:
+      - AD-Domain-Services
+      - DNS
+      - RSAT-AD-Tools
+      - RSAT-DNS-Server
+    include_management_tools: yes
+    state: present
+  register: feature_install
+
+- name: Promover servidor a Domain Controller
+  microsoft.ad.domain:
+    dns_domain_name: "{{ ad_domain_name }}"
+    safe_mode_password: "{{ ad_safe_mode_password }}"
+    domain_netbios_name: "{{ ad_netbios_name }}"
+  register: ad_result
+  when: not ansible_windows_domain_member | default(false)
+
+- name: Reiniciar si es necesario tras promover AD
+  ansible.windows.win_reboot:
+    reboot_timeout: 300
+    post_reboot_delay: 60
+  when: ad_result.reboot_required | default(false)
+
+- name: Esperar a que AD este disponible
+  ansible.windows.win_shell: |
+    $retries = 0
+    while ($retries -lt 10) {
+      try {
+        Get-ADDomain | Out-Null
+        Write-Output "AD_READY"
+        break
+      } catch {
+        Start-Sleep -Seconds 15
+        $retries++
+      }
+    }
+  register: ad_ready
+  until: "'AD_READY' in ad_ready.stdout"
+  retries: 5
+  delay: 30
+
+- name: Configurar zona DNS para VPC Personal
+  ansible.windows.win_shell: |
+    Import-Module DnsServer
+    $zone = "{{ ad_domain_name }}"
+    if (-not (Get-DnsServerZone -Name $zone -ErrorAction SilentlyContinue)) {
+      Add-DnsServerPrimaryZone -Name $zone -ReplicationScope "Domain"
+      Write-Output "ZONE_CREATED"
+    } else {
+      Write-Output "ZONE_EXISTS"
+    }
+
+- name: Crear zona DNS para VPC UFV (reverse lookup)
+  ansible.windows.win_shell: |
+    Import-Module DnsServer
+    $zone = "1.10.in-addr.arpa"
+    if (-not (Get-DnsServerZone -Name $zone -ErrorAction SilentlyContinue)) {
+      Add-DnsServerPrimaryZone -NetworkId "10.1.0.0/16" -ReplicationScope "Domain"
+      Write-Output "REVERSE_ZONE_CREATED"
+    } else {
+      Write-Output "REVERSE_ZONE_EXISTS"
+    }
+
+- name: Crear registros DNS para instancias Linux Personal
+  ansible.windows.win_shell: |
+    Import-Module DnsServer
+    $domain = "{{ ad_domain_name }}"
+    $records = @(
+      @{Name="postgres"; IP="10.0.1.10"},
+      @{Name="nginx-personal"; IP="10.0.1.11"},
+      @{Name="dc01"; IP="10.0.1.12"}
+    )
+    foreach ($r in $records) {
+      try {
+        Add-DnsServerResourceRecordA -ZoneName $domain -Name $r.Name -IPv4Address $r.IP -ErrorAction Stop
+        Write-Output "Created: $($r.Name)"
+      } catch {
+        Write-Output "Exists: $($r.Name)"
+      }
+    }
+
+- name: Crear registros DNS para instancias Linux UFV
+  ansible.windows.win_shell: |
+    Import-Module DnsServer
+    $domain = "{{ ad_domain_name }}"
+    $records = @(
+      @{Name="ufv-app1"; IP="10.1.1.10"},
+      @{Name="ufv-app2"; IP="10.1.1.11"}
+    )
+    foreach ($r in $records) {
+      try {
+        Add-DnsServerResourceRecordA -ZoneName $domain -Name $r.Name -IPv4Address $r.IP -ErrorAction Stop
+        Write-Output "Created: $($r.Name)"
+      } catch {
+        Write-Output "Exists: $($r.Name)"
+      }
+    }
+
+- name: Configurar NTP Server (W32tm)
+  ansible.windows.win_shell: |
+    w32tm /config /manualpeerlist:"pool.ntp.org,0x8 time.windows.com,0x8" /syncfromflags:manual /reliable:yes /update
+    Restart-Service w32tm
+    w32tm /resync /force
+    Write-Output "NTP_CONFIGURED"
+  register: ntp_result
+
+- name: Configurar firewall para NTP (UDP 123)
+  community.windows.win_firewall_rule:
+    name: "NTP Server Inbound"
+    localport: 123
+    action: allow
+    direction: in
+    protocol: udp
+    state: present
+    enabled: yes
+
+- name: Configurar firewall para DNS (TCP/UDP 53)
+  community.windows.win_firewall_rule:
+    name: "DNS Server {{ item.proto }}"
+    localport: 53
+    action: allow
+    direction: in
+    protocol: "{{ item.proto }}"
+    state: present
+    enabled: yes
+  loop:
+    - {proto: tcp}
+    - {proto: udp}
+
+- name: Verificar estado final del AD
+  ansible.windows.win_shell: |
+    $domain = Get-ADDomain
+    $dc     = Get-ADDomainController
+    $ntp    = w32tm /query /status
+    Write-Output "=== AD STATUS ==="
+    Write-Output "Domain:  $($domain.DNSRoot)"
+    Write-Output "DC:      $($dc.HostName)"
+    Write-Output "NTP:     OK"
+    Write-Output "DNS:     $(if ((Get-Service DNS).Status -eq 'Running') { 'Running' } else { 'Stopped' })"
+  register: ad_status
+
+- name: Mostrar estado AD
+  ansible.builtin.debug:
+    var: ad_status.stdout_lines

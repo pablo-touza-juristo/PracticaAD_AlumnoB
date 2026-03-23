@@ -1,0 +1,241 @@
+---
+# =============================================================
+# Playbook: db_backup_restore.yml
+# Operaciones de backup/restore de PostgreSQL contra S3
+#
+# Modos:
+#   dump    - Vuelca datos (--data-only) y sube a S3
+#   restore - Descarga dump de S3 y restaura la BD
+#   list    - Lista los dumps disponibles en S3
+#
+# La EC2 PostgreSQL usa IAM Role para acceder a S3 (sin --profile)
+# pg_dump conecta por socket Unix local (sin contrasena, via postgres)
+# =============================================================
+
+- name: "PostgreSQL Backup/Restore — {{ db_action | upper }}"
+  hosts: postgres
+  gather_facts: yes
+
+  vars:
+    # Base de datos — conexion por socket Unix como usuario postgres
+    db_name:     "academico"
+    db_user:     "postgres"
+    db_port:     "5432"
+
+    # S3 — sin --profile, la instancia usa el IAM Role asignado
+    s3_bucket:   "{{ s3_bucket_name }}"
+    s3_prefix:   "postgres-dumps"
+    s3_region:   "eu-west-1"
+
+    # Dump local temporal
+    dump_dir:    "/tmp/pg_dumps"
+    timestamp:   "{{ ansible_date_time.iso8601_basic_short }}"
+    dump_file:   "{{ dump_dir }}/dump_{{ db_name }}_{{ timestamp }}.sql.gz"
+
+  pre_tasks:
+    - name: Validar parametro db_action
+      ansible.builtin.assert:
+        that:
+          - db_action in ['dump', 'restore', 'list']
+        fail_msg: "db_action debe ser 'dump', 'restore' o 'list'"
+
+    - name: Crear directorio temporal para dumps
+      ansible.builtin.file:
+        path: "{{ dump_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0700'
+      when: db_action in ['dump', 'restore']
+
+    - name: Verificar que pg_dump esta disponible
+      ansible.builtin.command: which pg_dump
+      changed_when: false
+      when: db_action == 'dump'
+
+    - name: Verificar que aws cli esta disponible
+      ansible.builtin.command: which aws
+      changed_when: false
+
+  tasks:
+
+    # ── LIST ─────────────────────────────────────────────────
+    - name: "[LIST] Listar dumps disponibles en S3"
+      ansible.builtin.command: >
+        aws s3 ls s3://{{ s3_bucket }}/{{ s3_prefix }}/
+        --region {{ s3_region }}
+        --human-readable
+        --recursive
+      register: s3_list
+      changed_when: false
+      when: db_action == 'list'
+
+    - name: "[LIST] Mostrar dumps disponibles"
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+           Dumps disponibles en s3://{{ s3_bucket }}/{{ s3_prefix }}/
+          ============================================================
+          {{ s3_list.stdout if s3_list.stdout else '  (no hay dumps aun)' }}
+          ============================================================
+      when: db_action == 'list'
+
+    # ── DUMP ─────────────────────────────────────────────────
+    - name: "[DUMP] Volcar datos de PostgreSQL (data-only + comprimido)"
+      # Conecta por socket Unix como usuario postgres (no necesita contrasena)
+      # pipefail asegura que si pg_dump falla, el pipe entero falla
+      ansible.builtin.shell: |
+        set -o pipefail
+        pg_dump \
+          --port={{ db_port }} \
+          --username={{ db_user }} \
+          --dbname={{ db_name }} \
+          --data-only \
+          --schema=academico \
+          --format=plain \
+          --no-owner \
+          --no-privileges \
+        | gzip > {{ dump_file }}
+      args:
+        executable: /bin/bash
+      register: dump_result
+      become: yes
+      become_user: postgres
+      when: db_action == 'dump'
+
+    - name: "[DUMP] Verificar que el fichero de dump tiene contenido"
+      ansible.builtin.stat:
+        path: "{{ dump_file }}"
+      register: dump_stat
+      when: db_action == 'dump'
+
+    - name: "[DUMP] Fallar si el dump esta vacio (menos de 50 bytes = error)"
+      ansible.builtin.fail:
+        msg: "El dump esta vacio ({{ dump_stat.stat.size }} bytes). pg_dump ha fallado."
+      when:
+        - db_action == 'dump'
+        - dump_stat.stat.size < 50
+
+    - name: "[DUMP] Subir dump a S3 (IAM Role — sin --profile)"
+      ansible.builtin.command: >
+        aws s3 cp {{ dump_file }}
+        s3://{{ s3_bucket }}/{{ s3_prefix }}/{{ dump_file | basename }}
+        --region {{ s3_region }}
+        --storage-class STANDARD_IA
+      register: s3_upload
+      when: db_action == 'dump'
+
+    - name: "[DUMP] Confirmar subida"
+      ansible.builtin.debug:
+        msg:
+          - "✅ Dump completado"
+          - "Fichero: {{ dump_file | basename }}"
+          - "Tamanio: {{ (dump_stat.stat.size / 1024) | round(1) }} KB"
+          - "S3:      s3://{{ s3_bucket }}/{{ s3_prefix }}/{{ dump_file | basename }}"
+      when: db_action == 'dump'
+
+    - name: "[DUMP] Eliminar fichero local tras subir"
+      ansible.builtin.file:
+        path: "{{ dump_file }}"
+        state: absent
+      when: db_action == 'dump'
+
+    # ── RESTORE ──────────────────────────────────────────────
+    - name: "[RESTORE] Listar dumps disponibles antes de restaurar"
+      ansible.builtin.command: >
+        aws s3 ls s3://{{ s3_bucket }}/{{ s3_prefix }}/
+        --region {{ s3_region }}
+        --recursive
+      register: s3_list_restore
+      changed_when: false
+      when: db_action == 'restore'
+
+    - name: "[RESTORE] Mostrar dumps disponibles"
+      ansible.builtin.debug:
+        msg: |
+          Dumps disponibles (usar s3_dump_file para seleccionar):
+          {{ s3_list_restore.stdout }}
+      when:
+        - db_action == 'restore'
+        - s3_dump_file is not defined or s3_dump_file == ''
+
+    - name: "[RESTORE] Validar que se ha especificado s3_dump_file"
+      ansible.builtin.assert:
+        that:
+          - s3_dump_file is defined
+          - s3_dump_file | length > 0
+        fail_msg: >
+          Debes especificar el parametro s3_dump_file con el nombre del fichero a restaurar.
+          Ejemplo: dump_academico_20260322T120000.sql.gz
+      when: db_action == 'restore'
+
+    - name: "[RESTORE] Descargar dump desde S3 (IAM Role — sin --profile)"
+      ansible.builtin.command: >
+        aws s3 cp
+        s3://{{ s3_bucket }}/{{ s3_prefix }}/{{ s3_dump_file }}
+        {{ dump_dir }}/{{ s3_dump_file }}
+        --region {{ s3_region }}
+      when: db_action == 'restore'
+
+    - name: "[RESTORE] Truncar tablas antes de restaurar (orden FK correcto)"
+      ansible.builtin.shell: |
+        psql \
+          --port={{ db_port }} \
+          --username={{ db_user }} \
+          --dbname={{ db_name }} \
+          -c "TRUNCATE TABLE
+                academico.entregas,
+                academico.inscripciones,
+                academico.practicas,
+                academico.alumnos,
+                academico.asignaturas
+              RESTART IDENTITY CASCADE;"
+      become: yes
+      become_user: postgres
+      when: db_action == 'restore'
+
+    - name: "[RESTORE] Restaurar datos desde dump"
+      ansible.builtin.shell: |
+        set -o pipefail
+        gunzip -c {{ dump_dir }}/{{ s3_dump_file }} \
+        | psql \
+          --port={{ db_port }} \
+          --username={{ db_user }} \
+          --dbname={{ db_name }} \
+          --set ON_ERROR_STOP=1
+      args:
+        executable: /bin/bash
+      become: yes
+      become_user: postgres
+      register: restore_result
+      when: db_action == 'restore'
+
+    - name: "[RESTORE] Verificar restauracion — contar filas por tabla"
+      ansible.builtin.shell: |
+        psql \
+          --port={{ db_port }} \
+          --username={{ db_user }} \
+          --dbname={{ db_name }} \
+          -c "SELECT 'asignaturas'  AS tabla, COUNT(*) AS filas FROM academico.asignaturas
+              UNION ALL SELECT 'alumnos',       COUNT(*) FROM academico.alumnos
+              UNION ALL SELECT 'inscripciones', COUNT(*) FROM academico.inscripciones
+              UNION ALL SELECT 'practicas',     COUNT(*) FROM academico.practicas
+              UNION ALL SELECT 'entregas',      COUNT(*) FROM academico.entregas;"
+      become: yes
+      become_user: postgres
+      register: row_counts
+      changed_when: false
+      when: db_action == 'restore'
+
+    - name: "[RESTORE] Mostrar resultado de la restauracion"
+      ansible.builtin.debug:
+        msg:
+          - "✅ Restauracion completada desde {{ s3_dump_file }}"
+          - "{{ row_counts.stdout_lines }}"
+      when: db_action == 'restore'
+
+    - name: "[RESTORE] Limpiar fichero local de dump"
+      ansible.builtin.file:
+        path: "{{ dump_dir }}/{{ s3_dump_file }}"
+        state: absent
+      when: db_action == 'restore'

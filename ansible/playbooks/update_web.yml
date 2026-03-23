@@ -1,0 +1,81 @@
+---
+# =============================================================
+# Playbook: update_web.yml
+# Actualiza solo el contenido web y reinicia servicios
+# AlexPersonal: web estaticos + restart nginx
+# AlexUFV:      web estaticos + restart nginx + update node app
+# =============================================================
+
+# ── AlexPersonal: solo web estaticos + nginx ─────────────────
+- name: Actualizar web en AlexPersonal
+  hosts: linux_personal
+  gather_facts: no
+
+  vars:
+    src_public: "/usr/local/ufv/ufv-infra/ufv-app/public"
+    dst_public: "/var/www/public"
+
+  tasks:
+    - name: Sincronizar contenido web estatico
+      ansible.builtin.copy:
+        src: "{{ src_public }}/"
+        dest: "{{ dst_public }}/"
+        owner: nginx
+        group: nginx
+        mode: '0644'
+        directory_mode: '0755'
+
+    - name: Reiniciar nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+
+    - name: Confirmar nginx activo
+      ansible.builtin.debug:
+        msg: "✅ nginx reiniciado en {{ inventory_hostname }} ({{ instance_name | default('') }})"
+
+# ── AlexUFV: web estaticos + nginx + Node.js ─────────────────
+- name: Actualizar web y Node.js en AlexUFV
+  hosts: linux_ufv
+  gather_facts: no
+
+  vars:
+    src_public:   "/usr/local/ufv/ufv-infra/ufv-app/public"
+    dst_public:   "/var/www/public"
+    src_node_app: "/usr/local/ufv/ufv-infra/ufv-app/node/profesores.js"
+    dst_node_dir: "/usr/local/ufv/nodeService"
+    node_service: "ufvNodeService"
+
+  tasks:
+    - name: Sincronizar contenido web estatico
+      ansible.builtin.copy:
+        src: "{{ src_public }}/"
+        dest: "{{ dst_public }}/"
+        owner: nginx
+        group: nginx
+        mode: '0644'
+        directory_mode: '0755'
+
+    - name: Reiniciar nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+
+    - name: Actualizar profesores.js
+      ansible.builtin.copy:
+        src: "{{ src_node_app }}"
+        dest: "{{ dst_node_dir }}/profesores.js"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Reiniciar ufvNodeService
+      ansible.builtin.systemd:
+        name: "{{ node_service }}"
+        state: restarted
+
+    - name: Confirmar servicios activos
+      ansible.builtin.debug:
+        msg:
+          - "✅ nginx reiniciado en {{ inventory_hostname }} ({{ instance_name | default('') }})"
+          - "✅ ufvNodeService reiniciado en {{ inventory_hostname }}"

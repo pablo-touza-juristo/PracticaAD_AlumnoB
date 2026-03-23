@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal Académico - Alta Disponibilidad</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <img src="/static/img/logo.png" alt="Logo Académico" class="logo">
+        <h1>Portal Académico</h1>
+        <p>Bienvenido al sistema de gestión académica distribuido.</p>
+        
+        <div class="menu-grid">
+            <div class="menu-item">
+                <h3>👨‍🏫 Profesores</h3>
+                <p>Gestión de asignaturas y notas.</p>
+                <a href="/profesores/asignaturas" class="btn">Entrar</a>
+            </div>
+            
+            <div class="menu-item">
+                <h3>👥 Alumnos</h3>
+                <p>Registro y consulta de expedientes.</p>
+                <a href="/alumnos/registro" class="btn">Entrar</a>
+            </div>
+            
+            <div class="menu-item">
+                <h3>📝 Prácticas</h3>
+                <p>Publicación y seguimiento de tareas.</p>
+                <a href="/practicas/listado" class="btn">Entrar</a>
+            </div>
+        </div>
+        
+        <div class="footer">
+            Arquitectura: 1 Load Balancer -> 6 Web Servers (Nginx) -> 6 App Nodes (Node.js)
+        </div>
+    </div>
+</body>
+</html>
