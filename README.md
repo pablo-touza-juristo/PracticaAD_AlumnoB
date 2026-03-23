@@ -1,75 +1,380 @@
-# Instalación entorno DevOps (Jenkins + Ansible + AWS)
+# Instalación entorno de DevOps basado en Jenkins + Ansible + WinRM
+
+#############################################################################################
+# Instalacion entorno de DevOps basado en jenkins + ansible + winrm-client
+#############################################################################################
 
 ## Requisitos
 
-- Ubuntu (nodo de control)
-- Cuenta AWS con permisos
-- Acceso a instancias Linux y Windows
-- Claves SSH + credenciales Windows
+- Ubuntu (control node) donde se instalará Jenkins y Ansible.
+- Cuenta AWS con permisos para crear EC2, VPC, Security Groups, etc.
+- Instancias EC2 Linux y Windows (sin Elastic IPs, podemos usar DNS público dinámico o inventario dinámico).
+- SSH key para Linux y usuario administrador con contraseña para Windows.
 
 ---
 
-## 1. Actualizar sistema
+## Actualiza Ubuntu
 
+```bash
 sudo apt update && sudo apt upgrade -y
+```
 
 ---
 
-## 2. Instalar dependencias
+## Instala Ansible y dependencias para Windows
 
-sudo apt install -y ansible git python3-pip openjdk-17-jdk unzip curl
+```bash
+sudo apt install -y ansible git python3-pip openjdk-17-jdk -y
+```
 
 ---
 
-## 3. Instalar AWS CLI
+## Instalar aws-cli
 
+```bash
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
 unzip awscliv2.zip
 sudo ./aws/install
+```
 
-Configurar perfiles:
-
-aws configure --profile AlexPersonal
-aws configure --profile AlexUFV
+Configurar aws-cli o copiar ${HOME}/.aws desde otra instalación donde lo tengamos ya configurado
 
 ---
 
-## 4. Crear entorno virtual
+## Creamos venv
 
-cd /usr/local/ufv
-python3 -m venv ansible_venv
-source ansible_venv/bin/activate
+```bash
+python -m venv ansible_venv
+```
 
 ---
 
-## 5. Instalar dependencias Python
+## Activamos entorno
 
+```bash
+. ansible_venv/bin/activate
+```
+
+---
+
+## Instalamos paquetes
+
+### Crear requirements.txt
+
+```txt
+aiobotocore==3.3.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.3
+aioitertools==0.13.0
+aiosignal==1.4.0
+ansible==13.4.0
+ansible-core==2.20.3
+attrs==26.1.0
+boto3==1.42.70
+botocore==1.42.70
+certifi==2026.2.25
+cffi==2.0.0
+charset-normalizer==3.4.6
+cryptography==46.0.5
+frozenlist==1.8.0
+idna==3.11
+Jinja2==3.1.6
+jmespath==1.1.0
+MarkupSafe==3.0.3
+multidict==6.7.1
+packaging==26.0
+propcache==0.4.1
+pycparser==3.0
+pyspnego==0.12.1
+python-dateutil==2.9.0.post0
+pywinrm==0.5.0
+PyYAML==6.0.3
+requests==2.32.5
+requests_ntlm==1.3.0
+resolvelib==1.2.1
+s3transfer==0.16.0
+setuptools==82.0.1
+six==1.17.0
+typing_extensions==4.15.0
+urllib3==2.6.3
+wheel==0.46.3
+wrapt==2.1.2
+xmltodict==1.0.4
+yarl==1.23.0
+```
+
+```bash
 pip install -r requirements.txt
+```
 
 ---
 
-## 6. Instalar colecciones Ansible
+## Instalamos ansible tools
 
+```bash
 ansible-galaxy collection install amazon.aws --force
 ansible-galaxy collection install community.windows:2.3.0 --force
 ansible-galaxy collection install microsoft.ad --force
 ansible-galaxy collection install ansible.windows --force
 ansible-galaxy collection install community.general --force
+```
 
 ---
 
-## 7. Instalar Jenkins
+## Instala Jenkins
 
-cd /usr/local/ufv
+```bash
 wget https://get.jenkins.io/war-stable/latest/jenkins.war -O jenkins.war
 java -jar jenkins.war
+```
+
+Acceso:
+
+```
+http://${IP_JENKINS}:8080
+```
+
+---
+
+## Contraseña inicial
+
+```bash
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+```
+
+---
+
+## Configurar Jenkins
+
+### Configurar sistema
+
+- Configurar sistema: URL → ${IP_JENKINS}
+
+---
+
+### Obtener jenkins-cli.jar
+
+```bash
+curl -O http://${IP_JENKINS}:8080/jnlpJars/jenkins-cli.jar
+```
+
+---
+
+### Generar API-token
+
+- Profile icon → Security → Add new token  
+- Guardar token en variable:
+
+```bash
+export TOKEN=117d2bf22109fbb9c53823dc6bf47fb113
+```
+
+---
+
+## Configurar plugins
+
+### Crear fichero plugins-formatted.txt
+
+```txt
+amazon-ecr
+amazon-ecs
+ansible
+ansicolor
+ant
+antisamy-markup-formatter
+apache-httpcomponents-client-4-api
+artifact-manager-s3
+asm-api
+authentication-tokens
+aws-bucket-credentials
+aws-codebuild
+aws-codepipeline
+aws-credentials
+aws-global-configuration
+aws-java-sdk-api-gateway
+aws-java-sdk-autoscaling
+aws-java-sdk-cloudformation
+aws-java-sdk-cloudfront
+aws-java-sdk-cloudwatch
+aws-java-sdk-codebuild
+aws-java-sdk-codedeploy
+aws-java-sdk-ec2
+aws-java-sdk-ecr
+aws-java-sdk-ecs
+aws-java-sdk-efs
+aws-java-sdk-elasticbeanstalk
+aws-java-sdk-elasticloadbalancingv2
+aws-java-sdk-iam
+aws-java-sdk-kinesis
+aws-java-sdk-lambda
+aws-java-sdk-logs
+aws-java-sdk-minimal
+aws-java-sdk-organizations
+aws-java-sdk-secretsmanager
+aws-java-sdk-sns
+aws-java-sdk-sqs
+aws-java-sdk-ssm
+aws-java-sdk
+aws-java-sdk2-core
+aws-java-sdk2-ec2
+aws-java-sdk2-ecr
+aws-java-sdk2-netty-nio-client
+aws-java-sdk2-s3
+aws-java-sdk2-secretsmanager
+aws-lambda
+aws-parameter-store
+aws-secrets-manager-credentials-provider
+aws-secrets-manager-secret-source
+bootstrap5-api
+bouncycastle-api
+branch-api
+build-timeout
+build-timestamp
+caffeine-api
+checks-api
+cloudbees-folder
+codedeploy
+command-launcher
+commons-compress-api
+commons-lang3-api
+commons-text-api
+configuration-as-code
+copyartifact
+credentials-binding
+credentials
+dark-theme
+display-url-api
+docker-commons
+durable-task
+ec2
+echarts-api
+eddsa-api
+email-ext
+font-awesome-api
+git-client
+git
+github-api
+github-branch-source
+github
+gradle
+gson-api
+instance-identity
+ionicons-api
+jackson2-api
+jackson3-api
+jakarta-activation-api
+jakarta-mail-api
+jakarta-xml-bind-api
+javax-activation-api
+javax-mail-api
+jaxb
+jdk-tool
+jjwt-api
+joda-time-api
+jquery3-api
+jsch
+json-api
+json-editor-parameter
+json-path-api
+jsoup
+junit
+ldap
+log-parser
+mailer
+matrix-auth
+matrix-project
+metrics
+mina-sshd-api-common
+mina-sshd-api-core
+mina-sshd-api-scp
+netty-api
+node-iterator-api
+okhttp-api
+oss-symbols-api
+parameterized-scheduler
+pipeline-aws
+pipeline-build-step
+pipeline-github-lib
+pipeline-graph-view
+pipeline-groovy-lib
+pipeline-input-notification
+pipeline-input-step
+pipeline-milestone-step
+pipeline-model-api
+pipeline-model-definition
+pipeline-model-extensions
+pipeline-stage-step
+pipeline-stage-tags-metadata
+pipeline-timeline
+pipeline-utility-steps
+plain-credentials
+plot
+plugin-util-api
+prism-api
+resource-disposer
+s3
+scm-api
+script-security
+secondary-timestamper-plugin
+snakeyaml-api
+snakeyaml-engine-api
+ssh-agent
+ssh-credentials
+ssh-slaves
+ssh-steps
+sshd
+structs
+theme-manager
+timestamper
+token-macro
+trilead-api
+variant
+winrm-client
+workflow-aggregator
+workflow-api
+workflow-basic-steps
+workflow-cps
+workflow-durable-task-step
+workflow-job
+workflow-multibranch
+workflow-scm-step
+workflow-step-api
+workflow-support
+ws-cleanup
+```
+
+---
+
+## Instalar plugins (Jenkins parado)
+
+```bash
+cp plugins.txt ${HOME}/.jenkins/plugins
+cd ${HOME}/.jenkins/plugins
+
+while read plugin; do
+  echo "Downloading $plugin"
+  curl -L -o ${plugin}.hpi \
+  https://updates.jenkins.io/latest/${plugin}.hpi
+done < /usr/local/ufv/plugins.txt
+```
+
+---
+
+## Arrancar Jenkins
+
+```bash
+cd /usr/local/ufv
+java -jar jenkins.war
+```
 
 Acceso:
 http://${IP_JENKINS}:8080
 
 Obtener contraseña inicial:
+```bash
 sudo cat /var/lib/jenkins/secrets/initialAdminPassword
-
+```
+---
 
 ## 8. configuracion jobs Jenkins ufv-infra — Infraestructura AWS Multi-Cuenta + Ansible
 
