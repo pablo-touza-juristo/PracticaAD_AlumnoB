@@ -1,8 +1,4 @@
-# Instalación entorno de DevOps basado en Jenkins + Ansible + WinRM
-
-#############################################################################################
 # Instalacion entorno de DevOps basado en jenkins + ansible + winrm-client
-#############################################################################################
 
 ## Requisitos
 
