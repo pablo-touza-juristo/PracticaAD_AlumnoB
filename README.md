@@ -448,7 +448,7 @@ ufv-infra/
 │   │   ├── update_inventory.yml       # Ping + facts + reporte de estado
 │   │   ├── setup_ad_dns_ntp.yml       # Convierte DC01 en AD + DNS + NTP
 │   │   ├── setup_python_venv.yml      # Instala venv Python 3.12 en nginx
-│   │   ├── configure_dns_clients.yml  # Configura DNS en Linux para usar DC01
+│   │   ├── configure_dns_clients.yml  # Configura cliente de DNS y NTP en Linux para usar DC01
 │   │   ├── deploy_app.yml             # Despliegue inicial completo (nginx + Node.js)
 │   │   └── update_web.yml             # Actualización de contenido web + Node.js
 │   └── roles/
