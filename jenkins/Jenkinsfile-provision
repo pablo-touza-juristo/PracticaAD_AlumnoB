@@ -5,7 +5,11 @@
 
 pipeline {
     agent any
-
+    
+    options {
+        ansiColor('xterm')
+    }
+    
     parameters {
         choice(
             name: 'PLAYBOOK',
@@ -64,6 +68,10 @@ pipeline {
         ANSIBLE_FORCE_COLOR = 'true'
         ANSIBLE_HOST_KEY_CHECKING = 'False'
         ANSIBLE_COLLECTIONS_PATHS  = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/ua4192/.ansible/collections:/usr/share/ansible/collections'
+        
+        // ACTIVAMOS ANSI_COLOR
+        ANSIBLE_FORCE_COLOR = 'true'
+        TERM = 'xterm
     }
 
     stages {

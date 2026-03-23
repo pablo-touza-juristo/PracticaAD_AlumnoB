@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2026-03-20'
+AWSTemplateFormatVersion: '2010-09-09'
 Description: Stack AlexUFV - VPC 10.1.0.0/16
 
 Parameters:

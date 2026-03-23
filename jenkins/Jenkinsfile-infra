@@ -1,6 +1,10 @@
 pipeline {
     agent any
-
+    
+    options {
+        ansiColor('xterm')
+    }
+    
     parameters {
         string(name: 'MY_PUBLIC_IP',       defaultValue: '',                      description: 'Tu IP publica para SSH (vacio = autodetectar)')
         string(name: 'KEY_PAIR_PERSONAL',  defaultValue: 'aws',                   description: 'Key Pair en AlexPersonal')
@@ -21,6 +25,10 @@ pipeline {
         STACK_UFV            = 'stack-ufv'
         CFN_PERSONAL = '/usr/local/ufv/ufv-infra/cloudformation/stack-personal.yaml'
         CFN_UFV      = '/usr/local/ufv/ufv-infra/cloudformation/stack-ufv.yaml'
+        
+        // ACTIVAMOS ANSI_COLOR
+        ANSIBLE_FORCE_COLOR = 'true'
+        TERM = 'xterm
     }
 
     stages {
@@ -76,7 +84,7 @@ pipeline {
             steps {
                 script {
                     def prereqTemplate = """
-AWSTemplateFormatVersion: '2026-03-20'
+AWSTemplateFormatVersion: '2010-09-09'
 Description: Rol IAM para aceptar VPC Peering desde AlexPersonal
 Parameters:
   PersonalAccountId:
@@ -87,7 +95,7 @@ Resources:
     Properties:
       RoleName: vpc-peering-acceptor-role
       AssumeRolePolicyDocument:
-        Version: "2026-03-20"
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:

@@ -5,7 +5,11 @@
 
 pipeline {
     agent any
-
+    
+    options {
+        ansiColor('xterm')
+    }
+    
     parameters {
         booleanParam(name: 'VERIFY_CONNECTIVITY', defaultValue: true,
             description: 'Hacer ping a todos los hosts tras actualizar inventario')
@@ -17,7 +21,10 @@ pipeline {
         ANSIBLE_DIR     = '/usr/local/ufv/ufv-infra/ansible'
         ANSIBLE_CFG     = '/usr/local/ufv/ufv-infra/ansible/ansible.cfg'
         INVENTORY       = '/usr/local/ufv/ufv-infra/ansible/inventory/aws_inventory.sh'
+        
+        // ACTIVAMOS ANSI_COLOR
         ANSIBLE_FORCE_COLOR = 'true'
+        TERM = 'xterm
     }
 
     stages {

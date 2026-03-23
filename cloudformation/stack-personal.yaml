@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2026-03-20'
+AWSTemplateFormatVersion: '2010-09-09'
 Description: Stack AlexPersonal - VPC 10.0.0.0/16
 
 Parameters:
@@ -40,7 +40,7 @@ Resources:
     Properties:
       RoleName: !Sub "postgres-backup-role-${AWS::StackName}"
       AssumeRolePolicyDocument:
-        Version: "2026-03-20"
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -49,7 +49,7 @@ Resources:
       Policies:
         - PolicyName: S3BackupAccess
           PolicyDocument:
-            Version: "2026-03-20"
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
