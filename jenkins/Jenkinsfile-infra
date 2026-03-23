@@ -76,7 +76,7 @@ pipeline {
             steps {
                 script {
                     def prereqTemplate = """
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: '2026-03-20'
 Description: Rol IAM para aceptar VPC Peering desde AlexPersonal
 Parameters:
   PersonalAccountId:
@@ -87,7 +87,7 @@ Resources:
     Properties:
       RoleName: vpc-peering-acceptor-role
       AssumeRolePolicyDocument:
-        Version: "2012-10-17"
+        Version: "2026-03-20"
         Statement:
           - Effect: Allow
             Principal:
@@ -96,7 +96,7 @@ Resources:
       Policies:
         - PolicyName: AcceptVpcPeering
           PolicyDocument:
-            Version: "2012-10-17"
+            Version: "2026-03-20"
             Statement:
               - Effect: Allow
                 Action:
