@@ -50,7 +50,6 @@ pipeline {
         ANSIBLE_DIR               = '/usr/local/ufv/ufv-infra/ansible'
         ANSIBLE_CFG               = '/usr/local/ufv/ufv-infra/ansible/ansible.cfg'
         INVENTORY                 = '/usr/local/ufv/ufv-infra/ansible/inventory/aws_inventory.sh'
-        ANSIBLE_FORCE_COLOR       = 'true'
         ANSIBLE_HOST_KEY_CHECKING = 'False'
         ANSIBLE_COLLECTIONS_PATHS = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/ua4192/.ansible/collections:/usr/share/ansible/collections'
         AWS_PROFILE               = 'AlexPersonal'
