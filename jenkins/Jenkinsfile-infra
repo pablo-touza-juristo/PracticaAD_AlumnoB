@@ -28,7 +28,7 @@ pipeline {
         
         // ACTIVAMOS ANSI_COLOR
         ANSIBLE_FORCE_COLOR = 'true'
-        TERM = 'xterm
+        TERM = 'xterm'
     }
 
     stages {
