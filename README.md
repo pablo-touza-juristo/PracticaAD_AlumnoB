@@ -1,5 +1,7 @@
 # Instalacion entorno de DevOps basado en AWS + jenkins + ansible + winrm-client
 
+![architecture](images/devops.png)
+
 ## Requisitos
 
 - Ubuntu (control node) donde se instalará Jenkins y Ansible.
