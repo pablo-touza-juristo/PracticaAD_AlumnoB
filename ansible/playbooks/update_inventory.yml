@@ -1,11 +1,11 @@
 ---
 # =============================================================
-# Playbook: update_inventory.yml
-# Refresca el inventario dinamico, hace ping a todos los hosts
+# Playbook: update_inventory.yml (Adaptado para Alumno B)
+# Refresca el inventario dinamico, hace ping a los hosts
 # y genera un reporte con el estado de cada instancia
 # =============================================================
 
-- name: Verificar conectividad Linux Personal
+- name: Verificar conectividad Linux Personal (Alumno B)
   hosts: linux_personal
   gather_facts: yes
   ignore_unreachable: yes
@@ -21,31 +21,6 @@
           - hardware
       when: ping_result is succeeded
 
-- name: Verificar conectividad Linux UFV
-  hosts: linux_ufv
-  gather_facts: yes
-  ignore_unreachable: yes
-  tasks:
-    - name: Ping
-      ansible.builtin.ping:
-      register: ping_result
-
-    - name: Recoger info del sistema
-      ansible.builtin.setup:
-        gather_subset:
-          - network
-          - hardware
-      when: ping_result is succeeded
-
-- name: Verificar conectividad Windows
-  hosts: windows_personal
-  gather_facts: yes
-  ignore_unreachable: yes
-  tasks:
-    - name: Win ping
-      ansible.windows.win_ping:
-      register: win_ping_result
-
 - name: Generar reporte de inventario
   hosts: localhost
   gather_facts: no
@@ -57,21 +32,8 @@
            INVENTARIO AWS - {{ lookup('pipe', 'date') }}
           ============================================================
 
-          --- AlexPersonal (10.0.0.0/16) ---
+          --- Alumno B (10.8.0.0/16) ---
           {% for host in groups['linux_personal'] | default([]) %}
-            [Linux] {{ hostvars[host]['instance_name'] | default('N/A') }}
-                    IP: {{ host }}
-                    Estado: {{ 'ACCESIBLE' if hostvars[host].get('ansible_hostname') else 'NO ACCESIBLE' }}
-                    OS: {{ hostvars[host].get('ansible_distribution', 'N/A') }} {{ hostvars[host].get('ansible_distribution_version', '') }}
-          {% endfor %}
-          {% for host in groups['windows_personal'] | default([]) %}
-            [Windows] {{ hostvars[host]['instance_name'] | default('N/A') }}
-                      IP: {{ host }}
-                      Estado: {{ 'ACCESIBLE' if hostvars[host].get('ansible_hostname') else 'NO ACCESIBLE' }}
-          {% endfor %}
-
-          --- AlexUFV (10.1.0.0/16) ---
-          {% for host in groups['linux_ufv'] | default([]) %}
             [Linux] {{ hostvars[host]['instance_name'] | default('N/A') }}
                     IP: {{ host }}
                     Estado: {{ 'ACCESIBLE' if hostvars[host].get('ansible_hostname') else 'NO ACCESIBLE' }}
@@ -87,26 +49,20 @@
       ansible.builtin.copy:
         content: |
           # Inventario generado: {{ lookup('pipe', 'date') }}
+
           [linux_personal]
           {% for host in groups['linux_personal'] | default([]) %}
           {{ host }}  # {{ hostvars[host]['instance_name'] | default('') }}
           {% endfor %}
 
-          [linux_ufv]
-          {% for host in groups['linux_ufv'] | default([]) %}
-          {{ host }}  # {{ hostvars[host]['instance_name'] | default('') }}
+          [nginx]
+          {% for host in groups['nginx'] | default([]) %}
+          {{ host }}
           {% endfor %}
 
-          [windows_personal]
-          {% for host in groups['windows_personal'] | default([]) %}
-          {{ host }}  # {{ hostvars[host]['instance_name'] | default('') }}
+          [postgres]
+          {% for host in groups['postgres'] | default([]) %}
+          {{ host }}
           {% endfor %}
-
-          [nginx:children]
-          linux_personal
-          linux_ufv
-
-          [postgres:children]
-          linux_personal
         dest: /usr/local/ufv/ufv-infra/ansible/inventory/current_inventory.ini
       delegate_to: localhost

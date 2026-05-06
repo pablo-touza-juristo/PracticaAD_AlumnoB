@@ -9,8 +9,8 @@
   gather_facts: yes
 
   vars:
-    venv_path:    "/opt/venv/app"
-    venv_owner:   "nginx"
+    venv_path: "/opt/venv/app"
+    venv_owner: "root"
     venv_packages:
       - boto3
       - requests
@@ -28,12 +28,6 @@
           - "Nombre: {{ instance_name | default('N/A') }}"
           - "Cuenta: {{ account | default('N/A') }}"
           - "Venv destino: {{ venv_path }}"
-
-    - name: Asegurar que nginx esta corriendo
-      ansible.builtin.systemd:
-        name: nginx
-        state: started
-        enabled: yes
 
   roles:
     - role: python_venv

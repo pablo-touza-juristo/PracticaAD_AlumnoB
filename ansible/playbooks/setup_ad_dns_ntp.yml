@@ -9,9 +9,9 @@
   gather_facts: yes
 
   vars:
-    ad_domain_name:       "corp.ufv.local"
-    ad_netbios_name:      "CORPUFV"
-    ad_safe_mode_password: "Airbusds2026!"   # Minimo 8 chars con mayus+num+especial
+    ad_domain_name: "corp.ufv.local"
+    ad_netbios_name: "CORPUFV"
+    ad_safe_mode_password: "Airbusds2026!" # Minimo 8 chars con mayus+num+especial
 
   pre_tasks:
     - name: Verificar que es Windows Server
@@ -23,7 +23,7 @@
     - name: Mostrar info del servidor
       ansible.builtin.debug:
         msg:
-           - "Host: {{ inventory_hostname }}"
+          - "Host: {{ inventory_hostname }}"
           - "OS: {{ ansible_facts['os_family'] }} {{ ansible_facts['os_version'] }}"
           - "Dominio objetivo: {{ ad_domain_name }}"
 

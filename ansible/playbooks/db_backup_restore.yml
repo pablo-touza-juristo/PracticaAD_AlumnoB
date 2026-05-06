@@ -18,19 +18,19 @@
 
   vars:
     # Base de datos — conexion por socket Unix como usuario postgres
-    db_name:     "academico"
-    db_user:     "postgres"
-    db_port:     "5432"
+    db_name: "academico"
+    db_user: "postgres"
+    db_port: "5432"
 
     # S3 — sin --profile, la instancia usa el IAM Role asignado
-    s3_bucket:   "{{ s3_bucket_name }}"
-    s3_prefix:   "postgres-dumps"
-    s3_region:   "eu-west-1"
+    s3_bucket: "{{ s3_bucket_name }}"
+    s3_prefix: "postgres-dumps"
+    s3_region: "eu-south-2"
 
     # Dump local temporal
-    dump_dir:    "/tmp/pg_dumps"
-    timestamp:   "{{ ansible_date_time.iso8601_basic_short }}"
-    dump_file:   "{{ dump_dir }}/dump_{{ db_name }}_{{ timestamp }}.sql.gz"
+    dump_dir: "/tmp/pg_dumps"
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+    dump_file: "{{ dump_dir }}/dump_{{ db_name }}_{{ timestamp }}.sql.gz"
 
   pre_tasks:
     - name: Validar parametro db_action
@@ -45,7 +45,7 @@
         state: directory
         owner: postgres
         group: postgres
-        mode: '0700'
+        mode: "0700"
       when: db_action in ['dump', 'restore']
 
     - name: Verificar que pg_dump esta disponible
@@ -58,7 +58,6 @@
       changed_when: false
 
   tasks:
-
     # ── LIST ─────────────────────────────────────────────────
     - name: "[LIST] Listar dumps disponibles en S3"
       ansible.builtin.command: >

@@ -1,10 +1,8 @@
 // =============================================================
 // Pipeline: AWS-UFV-Ansible-Web-Deploy
 // Actualiza contenido web estatico y reinicia servicios
-// AlexPersonal: web + nginx restart
-// AlexUFV:      web + nginx restart + node app update + restart
+// AlumnoB: web + nginx restart
 // =============================================================
-
 pipeline {
     agent any
     
@@ -26,7 +24,7 @@ pipeline {
         string(
             name: 'LIMIT_HOSTS',
             defaultValue: '',
-            description: 'Limitar a hosts especificos (ej: 10.1.1.10). Vacio = todos'
+            description: 'Limitar a hosts especificos (ej: 10.0.1.11). Vacio = todos'
         )
     }
 
@@ -35,7 +33,7 @@ pipeline {
         ANSIBLE_CFG               = '/usr/local/ufv/ufv-infra/ansible/ansible.cfg'
         INVENTORY                 = '/usr/local/ufv/ufv-infra/ansible/inventory/aws_inventory.sh'
         ANSIBLE_HOST_KEY_CHECKING = 'False'
-        ANSIBLE_COLLECTIONS_PATHS = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/ua4192/.ansible/collections:/usr/share/ansible/collections'
+        ANSIBLE_COLLECTIONS_PATHS = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/pablo/.ansible/collections:/usr/share/ansible/collections'
         
         // ACTIVAMOS ANSI_COLOR
         ANSIBLE_FORCE_COLOR = 'true'
@@ -43,7 +41,6 @@ pipeline {
     }
 
     stages {
-
         stage('Verificar inventario') {
             steps {
                 sh '''
@@ -53,13 +50,12 @@ pipeline {
             }
         }
 
-        stage('Actualizar web AlexPersonal + AlexUFV') {
+        stage('Actualizar web') {
             steps {
                 script {
                     def limitArg = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
                     def checkArg = params.DRY_RUN ? '--check' : ''
                     def verbArg  = params.VERBOSE ? '-vv' : '-v'
-
                     sh """
                         ANSIBLE_CONFIG=${ANSIBLE_CFG} \
                         ansible-playbook \
@@ -71,15 +67,14 @@ pipeline {
                 }
             }
         }
-
     }
 
     post {
         success {
-            echo "✅ Web actualizada correctamente en todos los servidores"
+            echo "  Web actualizada correctamente en todos los servidores"
         }
         failure {
-            echo "❌ Error al actualizar la web. Revisa los logs."
+            echo "  Error al actualizar la web. Revisa los logs."
         }
     }
 }

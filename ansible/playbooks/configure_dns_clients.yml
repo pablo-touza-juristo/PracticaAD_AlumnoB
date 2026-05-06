@@ -9,9 +9,9 @@
   gather_facts: yes
 
   vars:
-    dns_server_ip: "10.0.1.12"   # IP de DC01
-    dns_domain:    "corp.ufv.local"
-    ntp_server_ip: "10.0.1.10"
+    dns_server_ip: "10.0.1.140" # CORREGIDO: IP de DC01 en la nueva red
+    dns_domain: "empresa.local"
+    ntp_server_ip: "10.0.1.140" # CORREGIDO: El NTP debe ser el Windows Server
 
   tasks:
     - name: Configurar resolv.conf
@@ -29,8 +29,8 @@
       ansible.builtin.lineinfile:
         path: /etc/NetworkManager/NetworkManager.conf
         insertafter: '^\[main\]'
-        line: 'dns=none'
-        regexp: '^dns='
+        line: "dns=none"
+        regexp: "^dns="
         create: no
       notify: restart NetworkManager
       ignore_errors: yes
@@ -38,9 +38,8 @@
       failed_when: false
 
     # =============================
-    # 🔥 NUEVO: Configuración NTP
+    #   NUEVO: Configuración NTP
     # =============================
-
     - name: Configurar chrony para usar DC como NTP
       ansible.builtin.copy:
         dest: /etc/chrony.conf
@@ -74,7 +73,6 @@
     - name: Mostrar estado NTP
       ansible.builtin.debug:
         var: ntp_check.stdout_lines
-
     # =============================
 
     - name: Verificar resolucion DNS

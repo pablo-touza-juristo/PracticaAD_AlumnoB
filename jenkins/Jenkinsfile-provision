@@ -2,7 +2,6 @@
 // Pipeline: Provisionar infraestructura con Ansible
 // Ejecuta playbooks sobre los servidores AWS
 // =============================================================
-
 pipeline {
     agent any
     
@@ -66,7 +65,7 @@ pipeline {
         ANSIBLE_CFG         = '/usr/local/ufv/ufv-infra/ansible/ansible.cfg'
         INVENTORY           = '/usr/local/ufv/ufv-infra/ansible/inventory/aws_inventory.sh'
         ANSIBLE_HOST_KEY_CHECKING = 'False'
-        ANSIBLE_COLLECTIONS_PATHS  = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/ua4192/.ansible/collections:/usr/share/ansible/collections'
+        ANSIBLE_COLLECTIONS_PATHS  = '/usr/local/ufv/ansible_venv/lib/python3.12/site-packages/ansible_collections:/home/pablo/.ansible/collections:/usr/share/ansible/collections'
         
         // ACTIVAMOS ANSI_COLOR
         ANSIBLE_FORCE_COLOR = 'true'
@@ -74,7 +73,6 @@ pipeline {
     }
 
     stages {
-
         stage('Verificar entorno') {
             steps {
                 sh '''
@@ -109,7 +107,6 @@ pipeline {
                     def limitArg  = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
                     def checkArg  = params.DRY_RUN ? '--check' : ''
                     def verbArg   = params.VERBOSE ? '-vv' : '-v'
-
                     sh """
                         ANSIBLE_CONFIG=${ANSIBLE_CFG} \
                         ansible-playbook \
@@ -137,7 +134,6 @@ pipeline {
                     def limitArg = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
                     def checkArg = params.DRY_RUN ? '--check' : ''
                     def verbArg  = params.VERBOSE ? '-vv' : '-v'
-
                     sh """
                         ANSIBLE_CONFIG=${ANSIBLE_CFG} \
                         ansible-playbook \
@@ -163,7 +159,6 @@ pipeline {
                     def limitArg = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
                     def checkArg = params.DRY_RUN ? '--check' : ''
                     def verbArg  = params.VERBOSE ? '-vv' : '-v'
-
                     sh """
                         ANSIBLE_CONFIG=${ANSIBLE_CFG} \
                         ansible-playbook \
@@ -188,7 +183,6 @@ pipeline {
                     def limitArg = params.LIMIT_HOSTS ? "--limit '${params.LIMIT_HOSTS}'" : ''
                     def checkArg = params.DRY_RUN ? '--check' : ''
                     def verbArg  = params.VERBOSE ? '-vv' : '-v'
-
                     sh """
                         ANSIBLE_CONFIG=${ANSIBLE_CFG} \
                         ansible-playbook \
@@ -216,15 +210,14 @@ pipeline {
                 """
             }
         }
-
     }
 
     post {
         success {
-            echo "✅ Pipeline Ansible completado con éxito"
+            echo "  Pipeline Ansible completado con exito"
         }
         failure {
-            echo "❌ Pipeline Ansible fallido. Revisa los logs."
+            echo "  Pipeline Ansible fallido. Revisa los logs."
             echo "Puedes ejecutar manualmente con:"
             echo "  cd /usr/local/ufv/ufv-infra/ansible"
             echo "  ansible-playbook -i inventory/aws_inventory.sh playbooks/<nombre>.yml -v"

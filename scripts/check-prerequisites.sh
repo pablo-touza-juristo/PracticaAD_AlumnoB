@@ -8,8 +8,8 @@
 set -e
 
 REGION="${1:-eu-south-2}"
-PROFILE_PERSONAL="AlexPersonal"
-PROFILE_UFV="AlexUFV"
+PROFILE_PERSONAL="AlumnoB"
+PROFILE_UFV="AlumnoB"
 
 PASS=0
 FAIL=0
@@ -17,12 +17,12 @@ FAIL=0
 check() {
     local desc="$1"
     local cmd="$2"
-    if eval "$cmd" > /dev/null 2>&1; then
+    if eval "$cmd" >/dev/null 2>&1; then
         echo "  ✅  $desc"
-        PASS=$((PASS+1))
+        PASS=$((PASS + 1))
     else
         echo "  ❌  $desc"
-        FAIL=$((FAIL+1))
+        FAIL=$((FAIL + 1))
     fi
 }
 
@@ -39,33 +39,32 @@ check "version aws-cli >= 2" "aws --version 2>&1 | grep -q 'aws-cli/2'"
 echo ""
 echo "[ Perfiles AWS ]"
 check "Perfil '${PROFILE_PERSONAL}' configurado" "aws configure list --profile ${PROFILE_PERSONAL}"
-check "Perfil '${PROFILE_UFV}' configurado" "aws configure list --profile ${PROFILE_UFV}"
+#check "Perfil '${PROFILE_UFV}' configurado" "aws configure list --profile ${PROFILE_UFV}"
 
 echo ""
 echo "[ Autenticacion AWS ]"
-check "Acceso cuenta AlexPersonal" "aws sts get-caller-identity --profile ${PROFILE_PERSONAL} --region ${REGION}"
-check "Acceso cuenta AlexUFV" "aws sts get-caller-identity --profile ${PROFILE_UFV} --region ${REGION}"
+check "Acceso cuenta AlumnoB" "aws sts get-caller-identity --profile ${PROFILE_PERSONAL} --region ${REGION}"
+#check "Acceso cuenta AlumnoB" "aws sts get-caller-identity --profile ${PROFILE_UFV} --region ${REGION}"
 
 echo ""
 echo "[ IDs de cuenta ]"
 ACCOUNT_PERSONAL=$(aws sts get-caller-identity --profile ${PROFILE_PERSONAL} --region ${REGION} --query Account --output text 2>/dev/null || echo "ERROR")
-ACCOUNT_UFV=$(aws sts get-caller-identity --profile ${PROFILE_UFV} --region ${REGION} --query Account --output text 2>/dev/null || echo "ERROR")
-echo "  AlexPersonal Account ID: ${ACCOUNT_PERSONAL}"
-echo "  AlexUFV Account ID:      ${ACCOUNT_UFV}"
+#ACCOUNT_UFV=$(aws sts get-caller-identity --profile ${PROFILE_UFV} --region ${REGION} --query Account --output text 2>/dev/null || echo "ERROR")
+echo "  AlumnoB ID: ${ACCOUNT_PERSONAL}"
 
-if [ "$ACCOUNT_PERSONAL" = "$ACCOUNT_UFV" ]; then
-    echo "  ⚠️  ATENCION: Ambas cuentas tienen el mismo ID - asegurate de que los perfiles apuntan a cuentas distintas"
-fi
+#if [ "$ACCOUNT_PERSONAL" = "$ACCOUNT_UFV" ]; then
+#    echo "  ⚠️  ATENCION: Ambas cuentas tienen el mismo ID - asegurate de que los perfiles apuntan a cuentas distintas"
+#fi
 
 echo ""
 echo "[ Key Pairs ]"
-echo "  Listando Key Pairs en AlexPersonal (${REGION}):"
+echo "  Listando Key Pairs en AlumnoB (${REGION}):"
 aws ec2 describe-key-pairs --profile ${PROFILE_PERSONAL} --region ${REGION} \
     --query 'KeyPairs[*].KeyName' --output table 2>/dev/null || echo "  (sin key pairs o error de acceso)"
 
-echo "  Listando Key Pairs en AlexUFV (${REGION}):"
-aws ec2 describe-key-pairs --profile ${PROFILE_UFV} --region ${REGION} \
-    --query 'KeyPairs[*].KeyName' --output table 2>/dev/null || echo "  (sin key pairs o error de acceso)"
+#echo "  Listando Key Pairs en AlexUFV (${REGION}):"
+#aws ec2 describe-key-pairs --profile ${PROFILE_UFV} --region ${REGION} \
+#    --query 'KeyPairs[*].KeyName' --output table 2>/dev/null || echo "  (sin key pairs o error de acceso)"
 
 echo ""
 echo "[ AMIs disponibles - Amazon Linux 2023 ]"
@@ -76,7 +75,7 @@ AMI_PERSONAL=$(aws ec2 describe-images \
     --filters "Name=name,Values=al2023-ami-*-x86_64" "Name=state,Values=available" \
     --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
     --output text 2>/dev/null || echo "ERROR")
-echo "  AMI mas reciente AlexPersonal: ${AMI_PERSONAL}"
+echo "  AMI mas reciente AlumnoB: ${AMI_PERSONAL}"
 
 AMI_WINDOWS=$(aws ec2 describe-images \
     --profile ${PROFILE_PERSONAL} \
@@ -85,7 +84,7 @@ AMI_WINDOWS=$(aws ec2 describe-images \
     --filters "Name=name,Values=Windows_Server-2019-English-Full-Base-*" "Name=state,Values=available" \
     --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
     --output text 2>/dev/null || echo "ERROR")
-echo "  AMI Windows 2019 AlexPersonal:  ${AMI_WINDOWS}"
+echo "  AMI Windows 2019 AlumnoB:  ${AMI_WINDOWS}"
 
 AMI_UFV=$(aws ec2 describe-images \
     --profile ${PROFILE_UFV} \
@@ -94,25 +93,25 @@ AMI_UFV=$(aws ec2 describe-images \
     --filters "Name=name,Values=al2023-ami-*-x86_64" "Name=state,Values=available" \
     --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
     --output text 2>/dev/null || echo "ERROR")
-echo "  AMI mas reciente AlexUFV:      ${AMI_UFV}"
+echo "  AMI mas reciente AlumnoB:      ${AMI_UFV}"
 
 if [ "$AMI_PERSONAL" != "ERROR" ]; then
     echo ""
     echo "  ℹ️  Usa esta AMI en el Jenkinsfile o en los parametros del stack:"
-    echo "     Personal: ${AMI_PERSONAL}"
-    echo "     UFV:      ${AMI_UFV}"
+    echo "     AlumnoB: ${AMI_PERSONAL}"
+    echo "     AlumnoB:      ${AMI_UFV}"
 fi
 
 echo ""
 echo "[ Permisos IAM minimos necesarios ]"
-check "AlexPersonal puede crear CloudFormation" \
+check "AlumnoB puede crear CloudFormation" \
     "aws cloudformation list-stacks --profile ${PROFILE_PERSONAL} --region ${REGION}"
-check "AlexUFV puede crear CloudFormation" \
-    "aws cloudformation list-stacks --profile ${PROFILE_UFV} --region ${REGION}"
-check "AlexPersonal puede crear VPCs" \
+#check "AlumnoB puede crear CloudFormation" \
+#    "aws cloudformation list-stacks --profile ${PROFILE_UFV} --region ${REGION}"
+check "AlumnoB puede crear VPCs" \
     "aws ec2 describe-vpcs --profile ${PROFILE_PERSONAL} --region ${REGION}"
-check "AlexUFV puede crear VPCs" \
-    "aws ec2 describe-vpcs --profile ${PROFILE_UFV} --region ${REGION}"
+#check "AlumnoB puede crear VPCs" \
+#    "aws ec2 describe-vpcs --profile ${PROFILE_UFV} --region ${REGION}"
 
 echo ""
 echo "[ IP Publica ]"
